@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer utilities {
+  /* Premium frosted glassmorphism effects */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.035);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+  }
+  
+  .glass-card-hover {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .glass-card-hover:hover {
+    transform: translateY(-4px);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(59, 130, 246, 0.45);
+    box-shadow: 0 16px 36px -10px rgba(59, 130, 246, 0.25);
+  }
+
+  .glow-text-primary {
+    text-shadow: 0 0 15px rgba(59, 130, 246, 0.6);
+  }
+
+  .glow-border-primary {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+  }
+
+  .glass-input {
+    background: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: all 0.2s ease-in-out;
+  }
+
+  .glass-input:focus {
+    background: rgba(255, 255, 255, 0.07) !important;
+    border-color: rgba(59, 130, 246, 0.5) !important;
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.15);
+    outline: none;
+  }
+}
+
+body {
+  background-color: #020617;
+  color: #e2e8f0;
+}
+
+/* Custom scrollbars for dashboard */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}

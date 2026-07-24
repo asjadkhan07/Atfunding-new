@@ -1,0 +1,337 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile containing roles, balances, and setting preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "trader"] },
+        "affiliateCode": { "type": "string" },
+        "referredBy": { "type": "string" },
+        "emailVerified": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "account": {
+      "title": "Account",
+      "description": "Prop trading account details and evaluation progress",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "accountType": { "type": "string", "enum": ["one_step", "two_step", "payout_later", "instant_bolt"] },
+        "size": { "type": "number" },
+        "balance": { "type": "number" },
+        "startingBalance": { "type": "number" },
+        "equity": { "type": "number" },
+        "dailyStartingBalance": { "type": "number" },
+        "dailyStartingEquity": { "type": "number" },
+        "phase": { "type": "integer" },
+        "status": { "type": "string", "enum": ["active", "breached", "passed", "payout_requested"] },
+        "login": { "type": "string" },
+        "password": { "type": "string" },
+        "platform": { "type": "string" },
+        "server": { "type": "string" },
+        "profitTarget": { "type": "number" },
+        "dailyDrawdownLimit": { "type": "number" },
+        "maxDrawdownLimit": { "type": "number" },
+        "passedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "accountType", "size", "balance", "startingBalance", "status", "login", "password", "createdAt"]
+    },
+    "trade": {
+      "title": "Trade",
+      "description": "Trading transaction (simulated or active) recorded under an account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "accountId": { "type": "string" },
+        "userId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "type": { "type": "string", "enum": ["buy", "sell"] },
+        "lots": { "type": "number" },
+        "openPrice": { "type": "number" },
+        "closePrice": { "type": "number" },
+        "profit": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "closed"] },
+        "openTime": { "type": "string" },
+        "closeTime": { "type": "string" }
+      },
+      "required": ["id", "accountId", "userId", "symbol", "type", "lots", "openPrice", "profit", "status", "openTime"]
+    },
+    "payout": {
+      "title": "Payout",
+      "description": "Payout request details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "accountId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "payoutMethod": { "type": "string" },
+        "payoutAddress": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "processedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "accountId", "amount", "status", "payoutMethod", "createdAt"]
+    },
+    "affiliate": {
+      "title": "Affiliate",
+      "description": "Affiliate metrics and earnings for a user",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "code": { "type": "string" },
+        "clicks": { "type": "integer" },
+        "referrals": { "type": "integer" },
+        "unpaidBalance": { "type": "number" },
+        "totalEarned": { "type": "number" }
+      },
+      "required": ["userId", "code", "clicks", "referrals", "unpaidBalance", "totalEarned"]
+    },
+    "coupon": {
+      "title": "Coupon",
+      "description": "Promotion discount codes",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "discountPercent": { "type": "number" },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["code", "discountPercent", "active"]
+    },
+    "certificate": {
+      "title": "Certificate",
+      "description": "Awards and certificates earned by successful traders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "accountId": { "type": "string" },
+        "type": { "type": "string", "enum": ["payout", "passed_evaluation"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "userId", "accountId", "type", "date"]
+    },
+    "cms_page": {
+      "title": "CMS Page",
+      "description": "Dynamic policy and legal disclosures",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" }
+      },
+      "required": ["content"]
+    },
+    "socialLink": {
+      "title": "Social Link",
+      "description": "Configurable platform social media link",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "url": { "type": "string" },
+        "active": { "type": "boolean" },
+        "sortOrder": { "type": "number" }
+      },
+      "required": ["id", "name", "icon", "url", "active", "sortOrder"]
+    },
+    "paymentMethod": {
+      "title": "Payment Method",
+      "description": "Configurable payment receiving credentials",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "walletAddress": { "type": "string" },
+        "qrCode": { "type": "string" },
+        "notes": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "name", "walletAddress", "active"]
+    },
+    "payoutRequest": {
+      "title": "Payout Request",
+      "description": "A trader payout share withdrawal request",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "accountId": { "type": "string" },
+        "amount": { "type": "number" },
+        "notes": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "userEmail", "accountId", "amount", "status", "createdAt"]
+    },
+    "supportTicket": {
+      "title": "Support Ticket",
+      "description": "Customer support case or query containing conversation history",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "subject": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "replied", "closed"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "userEmail", "subject", "status", "createdAt", "updatedAt"]
+    },
+    "announcement": {
+      "title": "Announcement",
+      "description": "Admin generated alert, coupon or update news banner",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "message", "startDate", "endDate", "active", "createdAt"]
+    },
+    "availability_waitlist": {
+      "title": "Availability Waitlist",
+      "description": "User email waitlist for currently unavailable account packages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "packageId": { "type": "string" },
+        "packageName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email", "packageId", "packageName", "createdAt"]
+    },
+    "email_template": {
+      "title": "Email Template",
+      "description": "Editable system email notification templates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "subject", "body"]
+    },
+    "email_queued_item": {
+      "title": "Email Queued Item",
+      "description": "Queued emails pending automatic backend processing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipient": { "type": "string" },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "sent", "failed"] },
+        "createdAt": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "error": { "type": "string" }
+      },
+      "required": ["id", "recipient", "subject", "message", "status", "createdAt"]
+    },
+    "email_log": {
+      "title": "Email Log",
+      "description": "Historical record of processed/sent system emails",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipient": { "type": "string" },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string" },
+        "sentAt": { "type": "string" },
+        "deliveryStatus": { "type": "string" }
+      },
+      "required": ["id", "recipient", "subject", "status", "sentAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/user" },
+      "description": "Collection of user profiles"
+    },
+    "accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/account" },
+      "description": "Collection of registered trading accounts"
+    },
+    "trades/{tradeId}": {
+      "schema": { "$ref": "#/entities/trade" },
+      "description": "Collection of trades executed"
+    },
+    "payouts/{payoutId}": {
+      "schema": { "$ref": "#/entities/payout" },
+      "description": "Collection of payout requests"
+    },
+    "affiliates/{userId}": {
+      "schema": { "$ref": "#/entities/affiliate" },
+      "description": "Collection of affiliate logs mapped to userIds"
+    },
+    "coupons/{code}": {
+      "schema": { "$ref": "#/entities/coupon" },
+      "description": "Collection of promotional discount coupons"
+    },
+    "certificates/{certificateId}": {
+      "schema": { "$ref": "#/entities/certificate" },
+      "description": "Collection of award certificates"
+    },
+    "cms_pages/{pageId}": {
+      "schema": { "$ref": "#/entities/cms_page" },
+      "description": "Collection of dynamic CMS page content"
+    },
+    "socialLinks/{socialLinkId}": {
+      "schema": { "$ref": "#/entities/socialLink" },
+      "description": "Collection of customizable social media platforms"
+    },
+    "paymentMethods/{paymentMethodId}": {
+      "schema": { "$ref": "#/entities/paymentMethod" },
+      "description": "Collection of dynamic checkout payment methods"
+    },
+    "payoutRequests/{payoutRequestId}": {
+      "schema": { "$ref": "#/entities/payoutRequest" },
+      "description": "Collection of dynamic trader payouts"
+    },
+    "supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/supportTicket" },
+      "description": "Collection of support chat tickets"
+    },
+    "announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/announcement" },
+      "description": "Collection of real-time admin announcements"
+    },
+    "availability_waitlist/{waitlistId}": {
+      "schema": { "$ref": "#/entities/availability_waitlist" },
+      "description": "Collection of traders waitlisted for unavailable accounts"
+    },
+    "email_templates/{templateId}": {
+      "schema": { "$ref": "#/entities/email_template" },
+      "description": "Collection of editable email notification templates"
+    },
+    "email_queue/{queueId}": {
+      "schema": { "$ref": "#/entities/email_queued_item" },
+      "description": "Collection of outgoing queued emails"
+    },
+    "email_logs/{logId}": {
+      "schema": { "$ref": "#/entities/email_log" },
+      "description": "Collection of sent/delivered email transaction logs"
+    }
+  }
+}
