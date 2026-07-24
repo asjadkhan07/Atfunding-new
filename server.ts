@@ -316,6 +316,201 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "ATFunding Mailer running" });
 });
 
+// Forgot Password - Send OTP Route
+app.post("/api/auth/send-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      res.status(400).json({ success: false, message: "Email is required." });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Fetch user to verify registration & get display name
+    let userName = "Trader";
+    let userId = "";
+    try {
+      const usersRef = collection(db, "users");
+      const q = query(usersRef, where("email", "==", cleanEmail));
+      const userSnap = await getDocs(q);
+      if (!userSnap.empty) {
+        const uData = userSnap.docs[0].data();
+        userName = uData.displayName || uData.name || uData.firstName || cleanEmail.split('@')[0];
+        userId = userSnap.docs[0].id;
+      }
+    } catch (uErr) {
+      console.warn("Could not query user for OTP:", uErr);
+    }
+
+    // 2. Generate 6-digit secure OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
+    const otpId = `otp-${cleanEmail.replace(/[^a-z0-9]/g, '_')}-${Date.now()}`;
+
+    // 3. Save OTP record to Firestore
+    await setDoc(doc(db, "password_otps", otpId), {
+      id: otpId,
+      email: cleanEmail,
+      otp: otpCode,
+      attempts: 0,
+      used: false,
+      expiresAt: expiresAt,
+      createdAt: new Date().toISOString()
+    });
+
+    // 4. Queue OTP Email
+    const emailBody = `Hello ${userName},\n\nYour OTP is:\n\n${otpCode}\n\nThis OTP is valid for 10 minutes.\n\nATFunding Team`;
+    
+    await setDoc(doc(db, "email_queue", `queue-otp-${Date.now()}`), {
+      id: `queue-otp-${Date.now()}`,
+      recipient: cleanEmail,
+      subject: "ATFunding Password Reset OTP",
+      message: emailBody,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      userId: userId
+    });
+
+    // Trigger queue processing immediately
+    setTimeout(() => {
+      processEmailQueue();
+    }, 100);
+
+    res.json({ 
+      success: true, 
+      message: "OTP sent successfully to your email. Please check your inbox.",
+      otpId: otpId
+    });
+  } catch (error: any) {
+    console.error("Error in /api/auth/send-otp:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to send OTP." });
+  }
+});
+
+// Forgot Password - Verify OTP Route
+app.post("/api/auth/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      res.status(400).json({ success: false, message: "Email and OTP are required." });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = otp.toString().trim();
+
+    const otpsRef = collection(db, "password_otps");
+    const q = query(otpsRef, where("email", "==", cleanEmail));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      res.status(400).json({ success: false, message: "No OTP request found for this email. Please request a new OTP." });
+      return;
+    }
+
+    // Find latest OTP document
+    const docs = snap.docs.map(d => ({ docId: d.id, ...d.data() as any }));
+    docs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const latestDoc = docs[0];
+
+    // Check if used
+    if (latestDoc.used) {
+      res.status(400).json({ success: false, message: "This OTP has already been used. Please request a new OTP." });
+      return;
+    }
+
+    // Check expiry (10 mins)
+    if (new Date(latestDoc.expiresAt).getTime() < Date.now()) {
+      res.status(400).json({ success: false, message: "OTP has expired (valid for 10 minutes). Please request a new OTP." });
+      return;
+    }
+
+    // Check attempts limit (5 attempts max)
+    if (latestDoc.attempts >= 5) {
+      res.status(400).json({ success: false, message: "Maximum attempt limit exceeded (5 attempts max). Please request a new OTP." });
+      return;
+    }
+
+    // Check OTP match
+    if (latestDoc.otp !== cleanOtp) {
+      const newAttempts = (latestDoc.attempts || 0) + 1;
+      await updateDoc(doc(db, "password_otps", latestDoc.docId), {
+        attempts: newAttempts
+      });
+      res.status(400).json({ 
+        success: false, 
+        message: `Invalid OTP code. (${newAttempts}/5 attempts used)` 
+      });
+      return;
+    }
+
+    res.json({ success: true, message: "OTP verified successfully!" });
+  } catch (error: any) {
+    console.error("Error in /api/auth/verify-otp:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to verify OTP." });
+  }
+});
+
+// Forgot Password - Reset Password Route
+app.post("/api/auth/reset-password", async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    if (!email || !otp || !newPassword) {
+      res.status(400).json({ success: false, message: "All parameters are required." });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = otp.toString().trim();
+
+    if (newPassword.length < 6) {
+      res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+      return;
+    }
+
+    // Verify OTP doc again
+    const otpsRef = collection(db, "password_otps");
+    const q = query(otpsRef, where("email", "==", cleanEmail));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      res.status(400).json({ success: false, message: "Invalid reset session. Please try again." });
+      return;
+    }
+
+    const docs = snap.docs.map(d => ({ docId: d.id, ...d.data() as any }));
+    docs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const latestDoc = docs[0];
+
+    if (latestDoc.used || latestDoc.otp !== cleanOtp || new Date(latestDoc.expiresAt).getTime() < Date.now() || latestDoc.attempts >= 5) {
+      res.status(400).json({ success: false, message: "Invalid or expired OTP session. Please request a new OTP." });
+      return;
+    }
+
+    // Mark OTP as used
+    await updateDoc(doc(db, "password_otps", latestDoc.docId), {
+      used: true,
+      usedAt: new Date().toISOString()
+    });
+
+    // Record password change timestamp on user document if exists
+    const usersRef = collection(db, "users");
+    const userQuery = query(usersRef, where("email", "==", cleanEmail));
+    const userSnap = await getDocs(userQuery);
+    if (!userSnap.empty) {
+      await updateDoc(doc(db, "users", userSnap.docs[0].id), {
+        passwordUpdatedAt: new Date().toISOString()
+      });
+    }
+
+    res.json({ success: true, message: "Password updated successfully!" });
+  } catch (error: any) {
+    console.error("Error in /api/auth/reset-password:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to reset password." });
+  }
+});
+
 // Real-time Forex, Crypto, and Gold price endpoint utilizing direct robust public APIs
 app.get("/api/prices", async (req, res) => {
   const FALLBACK_BASE_PRICES: { [key: string]: number } = {

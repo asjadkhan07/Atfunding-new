@@ -32,8 +32,8 @@ export interface UserProfile {
   createdAt: string;
 }
 
-export type AccountType = 'one_step' | 'two_step' | 'payout_later' | 'instant_bolt' | 'trial';
-export type AccountStatus = 'active' | 'breached' | 'passed' | 'payout_requested' | 'Pending Approval';
+export type AccountType = 'one_step' | 'two_step' | 'payout_later' | 'instant_bolt' | 'trial' | 'funded';
+export type AccountStatus = 'active' | 'breached' | 'passed' | 'payout_requested' | 'Pending Approval' | 'phase2_pending' | 'funded_pending';
 
 export interface TradingAccount {
   id: string;
@@ -48,6 +48,8 @@ export interface TradingAccount {
   dailyStartingEquity: number;
   phase: number; // 1, 2, or 3 (Funded)
   status: AccountStatus;
+  phaseStatus?: string; // 'phase1_active', 'phase2_pending', 'phase2_active', 'funded_pending', 'funded'
+  cooldownUntil?: string; // ISO string timestamp for 10-minute calm down cooldown
   login: string;
   password: string;
   platform: string;
@@ -113,12 +115,48 @@ export interface Coupon {
 
 export interface Certificate {
   id: string;
+  certificateId: string;
   userId: string;
-  userName: string;
-  accountId: string;
-  type: 'payout' | 'passed_evaluation';
-  amount: number;
-  date: string;
+  name: string;
+  userName?: string;
+  email: string;
+  accountSize: string | number;
+  accountType: string; // Trial, Instant, 1 Step, 2 Step, Funded
+  phase: string; // Trial, Phase 1, Phase 2, Funded
+  issueDate: string;
+  certificateImage?: string;
+  userPhoto?: string;
+  createdAt: string;
+  type?: 'payout' | 'passed_evaluation' | string;
+  amount?: number;
+  date?: string;
+  customTitle?: string;
+  customMessage?: string;
+}
+
+export interface CertificateTemplate {
+  id?: string;
+  title: string; // e.g. "CERTIFICATE OF ACHIEVEMENT"
+  subtitle: string; // e.g. "PROUDLY PRESENTED TO"
+  customMessage: string;
+  badgeText: string; // e.g. "VERIFIED FUNDED TRADER"
+  statusIntro?: string; // e.g. "You are officially"
+  statusTitle?: string; // e.g. "FUNDED TRADER"
+  ceoName: string; // e.g. "Asjad Khan"
+  ceoTitle: string; // e.g. "CEO & FOUNDER"
+  riskTeamName?: string; // e.g. "Risk Team"
+  riskTeamTitle?: string; // e.g. "RISK TEAM"
+  companyName: string; // e.g. "ATFUNDING"
+  companyTagline?: string; // e.g. "TRADE. PROVE. GET FUNDED."
+  sealText1?: string; // e.g. "DISCIPLINE"
+  sealText2?: string; // e.g. "CONSISTENCY"
+  sealText3?: string; // e.g. "SUCCESS"
+  footerMessage: string;
+  bgImageUrl?: string;
+  logoUrl?: string;
+  signatureUrl?: string;
+  riskSignatureUrl?: string;
+  updatedAt?: string;
 }
 
 export interface LivePrice {

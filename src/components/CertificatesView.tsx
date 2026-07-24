@@ -1,155 +1,270 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Award, Calendar, User, ShieldCheck, Download, Printer, X 
+  Award, Download, Printer, X, FileText, Image as ImageIcon, ShieldCheck, CheckCircle2 
 } from 'lucide-react';
-import { Certificate } from '../types';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '../firebase';
+import { Certificate, CertificateTemplate } from '../types';
+import LuxuryCertificate, { DEFAULT_CERT_TEMPLATE } from './LuxuryCertificate';
 
 interface CertificatesViewProps {
   certificates: Certificate[];
   onClose?: () => void;
 }
 
+const DEFAULT_TEMPLATE: CertificateTemplate = {
+  title: 'CERTIFICATE OF ACHIEVEMENT',
+  subtitle: 'PROUDLY PRESENTED TO',
+  customMessage: 'For successfully passing the evaluation and demonstrating exceptional trading skills, discipline and risk management.',
+  badgeText: 'VERIFIED FUNDED TRADER',
+  ceoName: 'Asjad Khan',
+  ceoTitle: 'CEO & FOUNDER',
+  companyName: 'ATFUNDING',
+  footerMessage: 'THANK YOU FOR TRUSTING ATFUNDING. WE WISH YOU CONTINUED SUCCESS IN YOUR TRADING JOURNEY.',
+  bgImageUrl: '',
+  logoUrl: '',
+  signatureUrl: ''
+};
+
 export default function CertificatesView({ certificates, onClose }: CertificatesViewProps) {
   const [activeCert, setActiveCert] = useState<Certificate | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [template, setTemplate] = useState<CertificateTemplate>(DEFAULT_TEMPLATE);
+  const certRef = useRef<HTMLDivElement>(null);
 
-  const printCertificate = () => {
-    window.print();
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'settings', 'certificate_template'), (docSnap) => {
+      if (docSnap.exists()) {
+        setTemplate({ ...DEFAULT_TEMPLATE, ...docSnap.data() } as CertificateTemplate);
+      }
+    }, (err) => {
+      console.warn("Certificate template subscription error:", err);
+    });
+
+    return () => unsub();
+  }, []);
+
+  const formatMessage = (msg: string, cert: Certificate) => {
+    if (!msg) {
+      return `has successfully achieved ${cert.phase || 'Phase 1'} on a ${typeof cert.accountSize === 'number' ? `$${cert.accountSize.toLocaleString()}` : cert.accountSize || '$100,000'} account.`;
+    }
+    
+    const certName = cert.name || cert.userName || 'Trader';
+    const certSize = typeof cert.accountSize === 'number' ? `$${cert.accountSize.toLocaleString()}` : cert.accountSize || '$100,000';
+    const certPhase = cert.phase || 'Phase 1';
+    const certDate = cert.issueDate || cert.date || new Date().toLocaleDateString();
+    const certId = cert.certificateId || cert.id;
+
+    return msg
+      .replace(/{USER_NAME}/gi, certName)
+      .replace(/\[USER NAME\]/gi, certName)
+      .replace(/{ACCOUNT_SIZE}/gi, certSize)
+      .replace(/\[ACCOUNT SIZE\]/gi, certSize)
+      .replace(/{PHASE}/gi, certPhase)
+      .replace(/\[PHASE\]/gi, certPhase)
+      .replace(/{DATE}/gi, certDate)
+      .replace(/\[DATE\]/gi, certDate)
+      .replace(/{CERTIFICATE_ID}/gi, certId)
+      .replace(/\[CERTIFICATE ID\]/gi, certId);
+  };
+
+  const downloadPNG = async (cert: Certificate) => {
+    if (!certRef.current) return;
+    try {
+      setIsDownloading(true);
+      const canvas = await html2canvas(certRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#020617'
+      });
+      const link = document.createElement('a');
+      link.download = `ATFunding_Certificate_${cert.certificateId || cert.id}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (err) {
+      console.error("PNG export error:", err);
+      alert("Error generating PNG certificate download.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const downloadPDF = async (cert: Certificate) => {
+    if (!certRef.current) return;
+    try {
+      setIsDownloading(true);
+      const canvas = await html2canvas(certRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#020617'
+      });
+      const imgData = canvas.toDataURL('image/png');
+      
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'px',
+        format: [canvas.width, canvas.height]
+      });
+
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      pdf.save(`ATFunding_Certificate_${cert.certificateId || cert.id}.pdf`);
+    } catch (err) {
+      console.error("PDF export error:", err);
+      alert("Error generating PDF certificate download.");
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   return (
     <div id="certificates-view" className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight text-white">Your Earned Certificates</h2>
-        <p className="text-xs text-slate-400">Awards certifying evaluation achievements, phase passing records, and processed profit share payout milestones.</p>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+            <Award className="w-6 h-6 text-amber-400" />
+            <span>Earned Certificates</span>
+          </h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Official performance awards certifying evaluation phase progression, challenge completion, and funded trader achievements.
+          </p>
+        </div>
+        <div className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-full font-mono text-xs font-bold">
+          {certificates.length} Certificate{certificates.length === 1 ? '' : 's'} Issued
+        </div>
       </div>
 
       {certificates.length === 0 ? (
-        <div className="bg-white/5 border border-white/10 rounded-3xl p-10 text-center max-w-md mx-auto space-y-4 backdrop-blur-sm shadow-xl">
-          <Award className="w-12 h-12 text-slate-600 mx-auto" />
-          <h3 className="text-base font-bold text-white">No Certificates Awarded Yet</h3>
+        <div className="bg-white/5 border border-white/10 rounded-3xl p-12 text-center max-w-md mx-auto space-y-4 backdrop-blur-sm shadow-xl">
+          <Award className="w-14 h-14 text-slate-600 mx-auto" />
+          <h3 className="text-base font-bold text-white">No Certificates Issued Yet</h3>
           <p className="text-xs text-slate-400 leading-relaxed">
-            Certificates are awarded automatically when you satisfy evaluation criteria (pass challenge phases) or receive successfully completed payout share approvals from the Admin team.
+            Certificates are automatically awarded when you pass Phase 1 Evaluation, Phase 2 Evaluation, or reach Funded Account status.
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {certificates.map((cert) => (
-            <div 
-              key={cert.id}
-              className="bg-white/5 border border-white/10 rounded-3xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-xl"
-            >
-              <div className="space-y-4">
-                <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-                  <Award className="w-5.5 h-5.5 text-amber-500" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-white uppercase tracking-wider">
-                    {cert.type === 'passed_evaluation' ? 'Evaluation Success Award' : 'Payout Achievement Cert'}
-                  </h4>
-                  <p className="text-xs text-slate-500 mt-1">ID: {cert.id}</p>
-                </div>
-                <div className="space-y-1 text-xs text-slate-400">
-                  <div className="flex justify-between">
-                    <span>Trader</span>
-                    <span className="text-white font-semibold">{cert.userName}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Date awarded</span>
-                    <span className="text-white font-semibold font-mono">{new Date(cert.date).toLocaleDateString()}</span>
-                  </div>
-                  {cert.amount > 0 && (
-                    <div className="flex justify-between">
-                      <span>Certified Value</span>
-                      <span className="text-emerald-400 font-bold font-mono">${cert.amount.toLocaleString()}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
+          {certificates.map((cert) => {
+            const certName = cert.name || cert.userName || 'Trader';
+            const certId = cert.certificateId || cert.id;
+            const certPhase = cert.phase || (cert.type === 'passed_evaluation' ? 'Phase 1' : 'Funded');
+            const certSize = typeof cert.accountSize === 'number' 
+              ? `$${cert.accountSize.toLocaleString()}` 
+              : cert.accountSize || '$100,000';
+            const certType = cert.accountType || '2 Step';
 
-              <div className="mt-6 pt-4 border-t border-white/10">
-                <button
-                  onClick={() => setActiveCert(cert)}
-                  className="w-full py-2 bg-blue-600/10 hover:bg-blue-600 border border-blue-600/25 text-blue-400 hover:text-white rounded-full text-xs font-bold transition-all text-center"
-                >
-                  View Digital Certificate
-                </button>
+            return (
+              <div 
+                key={cert.id}
+                className="bg-white/5 border border-white/10 rounded-3xl p-6 flex flex-col justify-between hover:border-amber-500/40 transition-all shadow-xl group"
+              >
+                <div className="space-y-4">
+                  <div className="flex justify-between items-start">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-md">
+                      <Award className="w-6 h-6" />
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wider">
+                      {certPhase}
+                    </span>
+                  </div>
+
+                  <div>
+                    <h4 className="text-base font-extrabold text-white tracking-wide">
+                      {certPhase} Certificate
+                    </h4>
+                    <p className="text-[11px] font-mono text-slate-400 mt-0.5">
+                      ID: {certId}
+                    </p>
+                  </div>
+
+                  <div className="space-y-1.5 text-xs text-slate-400 bg-black/20 p-3.5 rounded-2xl border border-white/5">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Trader Name</span>
+                      <span className="text-white font-bold">{certName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Account Size</span>
+                      <span className="text-emerald-400 font-bold font-mono">{certSize}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Account Type</span>
+                      <span className="text-slate-300 capitalize">{certType}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Issue Date</span>
+                      <span className="text-slate-300 font-mono">{cert.issueDate || cert.date || new Date().toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-white/10 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveCert(cert)}
+                    className="flex-1 py-2.5 bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 rounded-xl text-xs font-extrabold transition-all text-center uppercase tracking-wider cursor-pointer"
+                  >
+                    View Certificate
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
       {/* Full-Screen Digital Certificate Modal */}
       {activeCert && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-md print:bg-white print:p-0">
-          <div className="relative w-full max-w-4xl bg-slate-950/95 border-4 border-amber-500/30 rounded-3xl p-8 sm:p-12 shadow-2xl text-center space-y-8 print:border-black print:bg-white print:text-black">
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-md">
+          <div className="relative w-full max-w-4xl space-y-4 my-8">
             
-            {/* Close actions */}
-            <button
-              onClick={() => setActiveCert(null)}
-              className="absolute right-6 top-6 text-slate-400 hover:text-white p-1.5 rounded-full hover:bg-white/5 transition-colors print:hidden"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            {/* Print action trigger */}
-            <div className="absolute left-6 top-6 flex items-center space-x-2 print:hidden">
-              <button
-                onClick={printCertificate}
-                className="flex items-center space-x-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-white rounded-full transition-all"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Print Certificate</span>
-              </button>
-            </div>
-
-            {/* Certificate Header Decoration */}
-            <div className="flex flex-col items-center space-y-4">
-              <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-amber-600 to-amber-400 flex items-center justify-center shadow-lg shadow-amber-500/20">
-                <Award className="w-10 h-10 text-white" />
+            {/* Modal Top Control Bar */}
+            <div className="flex justify-between items-center bg-slate-900 border border-white/10 rounded-2xl px-5 py-3">
+              <div className="flex items-center space-x-2 text-white font-bold text-xs">
+                <Award className="w-4 h-4 text-amber-400" />
+                <span>Certificate #{activeCert.certificateId || activeCert.id}</span>
               </div>
-              <span className="text-xs font-black text-amber-500 tracking-widest uppercase font-mono">ATFunding Elite Performance Group</span>
-            </div>
 
-            <div className="space-y-3">
-              <h1 className="text-3xl sm:text-4xl font-extrabold text-white uppercase tracking-wider print:text-black">
-                Certificate of Achievement
-              </h1>
-              <p className="text-slate-400 text-sm max-w-lg mx-auto print:text-black">
-                This document officially recognizes the outstanding trading parameters, dedication, and strict risk metrics satisfied by:
-              </p>
-            </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  disabled={isDownloading}
+                  onClick={() => downloadPNG(activeCert)}
+                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-600/20"
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  <span>{isDownloading ? 'Generating...' : 'Download PNG'}</span>
+                </button>
 
-            <div className="py-2 border-b-2 border-dashed border-amber-500/20 max-w-md mx-auto">
-              <p className="text-2xl sm:text-3xl font-extrabold text-white tracking-wide font-sans print:text-black">
-                {activeCert.userName}
-              </p>
-            </div>
+                <button
+                  type="button"
+                  disabled={isDownloading}
+                  onClick={() => downloadPDF(activeCert)}
+                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold transition-all cursor-pointer shadow-lg shadow-amber-500/20"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{isDownloading ? 'Generating...' : 'Download PDF'}</span>
+                </button>
 
-            <div className="space-y-4 max-w-xl mx-auto">
-              <p className="text-sm text-slate-400 leading-relaxed print:text-black">
-                For successfully qualifying under the rules of the <strong className="text-white print:text-black">{activeCert.type === 'passed_evaluation' ? 'Evaluation Challenge Program' : 'Funded Profit Share Division'}</strong> on Account ID <span className="font-mono text-blue-300 font-bold">{activeCert.accountId}</span>. 
-                The trader demonstrated absolute compliance with all drawdown thresholds, and outstanding precision execution.
-              </p>
-              
-              {activeCert.amount > 0 && (
-                <p className="text-lg font-bold text-emerald-400 font-mono">
-                  Certified Payout/Funded Volume: ${activeCert.amount.toLocaleString()} USD
-                </p>
-              )}
-            </div>
-
-            {/* Signatures seals row */}
-            <div className="grid grid-cols-2 gap-8 max-w-lg mx-auto pt-8 border-t border-white/10 print:border-black/10">
-              <div className="text-center">
-                <p className="text-sm font-bold text-white font-mono print:text-black">Asjad Trades</p>
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1">Founder, CEO</p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm font-bold text-white font-mono print:text-black">{new Date(activeCert.date).toLocaleDateString()}</p>
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1">Date of Certification</p>
+                <button
+                  type="button"
+                  onClick={() => setActiveCert(null)}
+                  className="p-2 text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
             </div>
+
+            {/* Rendered Official Certificate Card Node (for display, canvas PNG, and PDF download) */}
+            <div className="w-full">
+              <LuxuryCertificate 
+                certificate={activeCert}
+                template={template}
+                containerRef={certRef}
+              />
+            </div>
+
           </div>
         </div>
       )}

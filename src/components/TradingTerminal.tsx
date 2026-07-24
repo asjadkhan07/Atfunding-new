@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, Square, TrendingUp, TrendingDown, RefreshCw, AlertCircle, CheckCircle, 
-  Info, ShieldAlert, Sparkles, Trophy, Percent, Wallet, Maximize2, Minimize2, Coins, Lock, Clock
+  Info, ShieldAlert, Sparkles, Trophy, Percent, Wallet, Maximize2, Minimize2, Coins, Lock, Clock, Award, AlertTriangle
 } from 'lucide-react';
 import { TradingAccount, Trade, LivePrice } from '../types';
 import { db } from '../firebase';
@@ -215,13 +215,31 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   // Real-time 10-Minute Cooldown Ticker for Bolt / Instant Accounts
   const [cooldownRemainingSec, setCooldownRemainingSec] = useState<number>(0);
 
+  // Popup warning modal state for rule breaches, cooldowns, and phase passes
+  const [ruleBreachModal, setRuleBreachModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    subtitle?: string;
+    message: string;
+    details?: string;
+    type?: 'warning' | 'cooldown' | 'success';
+  } | null>(null);
+
   useEffect(() => {
-    if (selectedAccount?.accountType === 'instant_bolt' && selectedAccount?.lastTradeClosedAt) {
+    if (selectedAccount?.accountType === 'instant_bolt' && (selectedAccount?.lastTradeClosedAt || selectedAccount?.cooldownUntil)) {
       const updateCooldown = () => {
-        const lastClose = new Date(selectedAccount.lastTradeClosedAt!).getTime();
-        const elapsed = Date.now() - lastClose;
-        const totalCooldown = 10 * 60 * 1000;
-        const rem = totalCooldown - elapsed;
+        const cooldownUntilTime = selectedAccount.cooldownUntil ? new Date(selectedAccount.cooldownUntil).getTime() : 0;
+        const lastClose = selectedAccount.lastTradeClosedAt ? new Date(selectedAccount.lastTradeClosedAt).getTime() : 0;
+        const now = Date.now();
+
+        let rem = 0;
+        if (cooldownUntilTime > now) {
+          rem = cooldownUntilTime - now;
+        } else if (lastClose > 0) {
+          const totalCooldown = 10 * 60 * 1000;
+          rem = totalCooldown - (now - lastClose);
+        }
+
         if (rem > 0) {
           setCooldownRemainingSec(Math.ceil(rem / 1000));
         } else {
@@ -235,7 +253,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
     } else {
       setCooldownRemainingSec(0);
     }
-  }, [selectedAccount?.id, selectedAccount?.lastTradeClosedAt, selectedAccount?.accountType]);
+  }, [selectedAccount?.id, selectedAccount?.lastTradeClosedAt, selectedAccount?.cooldownUntil, selectedAccount?.accountType]);
 
   const formatCooldownTime = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -341,21 +359,71 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
               currentPhase = 3; // Funded
             } else if (accData.accountType === 'two_step') {
               if (accData.phase === 1) {
-                currentPhase = 2; // Move to Phase 2
-                const newPhase2Target = accData.startingBalance * 0.05;
+                currentStatus = 'phase2_pending';
                 await updateDoc(accountRef, {
-                  balance: accData.startingBalance, // reset balance for next phase
-                  equity: accData.startingBalance,
-                  dailyStartingBalance: accData.startingBalance,
-                  profitTarget: newPhase2Target,
-                  phase: 2
+                  balance: newBalance,
+                  equity: newEquity,
+                  status: 'phase2_pending',
+                  phaseStatus: 'phase2_pending',
+                  passedAt: new Date().toISOString()
                 });
-                setSuccessMsg("CONGRATULATIONS! You passed Phase 1. Welcome to Phase 2 Evaluation!");
+
+                // Create user notification
+                const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                await setDoc(doc(db, 'notifications', notifId), {
+                  id: notifId,
+                  userId: accData.userId,
+                  title: 'Phase 1 Passed! 🎉',
+                  message: `Congratulations! Account #${accData.login || accData.id} has passed Phase 1 profit target. Phase 2 activation is now PENDING ADMIN APPROVAL.`,
+                  type: 'success',
+                  read: false,
+                  createdAt: new Date().toISOString()
+                });
+
+                setSuccessMsg("CONGRATULATIONS! You passed Phase 1. Phase 2 activation is pending admin approval!");
+                setRuleBreachModal({
+                  isOpen: true,
+                  title: '🎉 Phase 1 Passed Successfully!',
+                  subtitle: 'Phase 2 Activation Pending Admin Approval',
+                  type: 'success',
+                  message: `Congratulations! You reached the profit target for Phase 1 on Account #${accData.login || accData.id}.`,
+                  details: `Your Phase 1 evaluation has been verified and submitted for review. Once approved by the admin team in the Admin Panel, your Phase 2 account will be activated immediately.`
+                });
                 onRefreshAccount();
                 return;
               } else if (accData.phase === 2) {
-                currentStatus = 'passed';
-                currentPhase = 3; // Fully funded!
+                currentStatus = 'funded_pending';
+                await updateDoc(accountRef, {
+                  balance: newBalance,
+                  equity: newEquity,
+                  status: 'funded_pending',
+                  phaseStatus: 'funded_pending',
+                  passedAt: new Date().toISOString()
+                });
+
+                // Create user notification
+                const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                await setDoc(doc(db, 'notifications', notifId), {
+                  id: notifId,
+                  userId: accData.userId,
+                  title: 'Phase 2 Passed! Evaluation Complete! 🎉',
+                  message: `Congratulations! Account #${accData.login || accData.id} passed Phase 2. Funded Account activation is now PENDING ADMIN APPROVAL.`,
+                  type: 'success',
+                  read: false,
+                  createdAt: new Date().toISOString()
+                });
+
+                setSuccessMsg("CONGRATULATIONS! You passed Phase 2. Funded account activation is pending admin approval!");
+                setRuleBreachModal({
+                  isOpen: true,
+                  title: '🎉 Evaluation Phase 2 Complete!',
+                  subtitle: 'Funded Account & Payouts Pending Admin Approval',
+                  type: 'success',
+                  message: `Outstanding performance! You passed Phase 2 on Account #${accData.login || accData.id}. You have completed both evaluation phases!`,
+                  details: `Your account is now pending final admin approval for Funded Account activation. Once approved by the admin team, your live Funded Account and Payout Withdrawal section will be unlocked!`
+                });
+                onRefreshAccount();
+                return;
               }
             } else if (accData.accountType === 'payout_later') {
               currentStatus = 'passed';
@@ -471,6 +539,8 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       
       if (durationSeconds < 120) {
         const violationId = vId();
+        const cooldownIso = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
         await setDoc(doc(db, 'ruleViolations', violationId), {
           id: violationId,
           accountId: accData.id,
@@ -486,11 +556,28 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
           closeTime: closeTimeStr,
           durationSeconds: durationSeconds,
           violationType: '2 Minute Hold Rule',
-          description: `Trade ${trade.id} on ${trade.symbol} (${trade.lots} lots) closed in ${durationSeconds}s (less than 2 minutes).`,
+          description: `Trade ${trade.id} on ${trade.symbol} (${trade.lots} lots) closed in ${durationSeconds}s (less than 2 minutes / 120s). 10-minute calm down cooldown activated.`,
           status: 'Warning',
           timestamp: new Date().toISOString()
         });
-        setErrorMsg(`WARNING: Trade closed in ${durationSeconds}s. 2-Minute Hold Rule violation recorded as warning.`);
+
+        // Set cooldown on account document in Firestore
+        await updateDoc(doc(db, 'accounts', accData.id), {
+          lastTradeClosedAt: closeTimeStr,
+          cooldownUntil: cooldownIso
+        });
+
+        // Show prominent warning popup modal to trader
+        setRuleBreachModal({
+          isOpen: true,
+          title: '⚠️ Rule Violation Warning: 2-Minute Rule Breached!',
+          subtitle: '👇 Instant Account 10-Minute Calm Down Cooldown Active',
+          type: 'warning',
+          message: `You closed Trade #${trade.id} on ${trade.symbol} (${trade.lots} lots) in ${durationSeconds} seconds, which is less than the required 2 minutes (120 seconds).`,
+          details: `As per Instant Account trading rules, closing trades under 2 minutes is strictly prohibited. A 10-minute calm down cooldown period has been placed on your account. You will not be able to place new trades for the next 10 minutes. This violation has been logged to the Admin Panel.`
+        });
+
+        setErrorMsg(`WARNING: Trade closed in ${durationSeconds}s (<2 minutes). 10-Minute Calm Down Cooldown Activated.`);
       }
     }
 
@@ -574,20 +661,39 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       return;
     }
 
-    // 10-Minute Cooldown Check for ATF Instant Accounts
-    if (selectedAccount.accountType === 'instant_bolt' && selectedAccount.lastTradeClosedAt) {
-      const lastCloseTime = new Date(selectedAccount.lastTradeClosedAt).getTime();
+    // 10-Minute Calm Down Cooldown Check for Instant Accounts
+    if (selectedAccount.accountType === 'instant_bolt' && (selectedAccount.lastTradeClosedAt || selectedAccount.cooldownUntil)) {
+      const cooldownUntilTime = selectedAccount.cooldownUntil ? new Date(selectedAccount.cooldownUntil).getTime() : 0;
+      const lastCloseTime = selectedAccount.lastTradeClosedAt ? new Date(selectedAccount.lastTradeClosedAt).getTime() : 0;
       const now = Date.now();
-      const elapsedMs = now - lastCloseTime;
-      const cooldownMs = 10 * 60 * 1000; // 10 minutes = 600,000 ms
 
-      if (elapsedMs < cooldownMs) {
-        const remainingSec = Math.ceil((cooldownMs - elapsedMs) / 1000);
+      let remainingMs = 0;
+      if (cooldownUntilTime > now) {
+        remainingMs = cooldownUntilTime - now;
+      } else if (lastCloseTime > 0) {
+        const cooldownMs = 10 * 60 * 1000;
+        const elapsedMs = now - lastCloseTime;
+        if (elapsedMs < cooldownMs) {
+          remainingMs = cooldownMs - elapsedMs;
+        }
+      }
+
+      if (remainingMs > 0) {
+        const remainingSec = Math.ceil(remainingMs / 1000);
         const remainingMin = Math.floor(remainingSec / 60);
         const remSecFormatted = remainingSec % 60;
         const cooldownStr = remainingMin > 0 ? `${remainingMin}m ${remSecFormatted}s` : `${remainingSec}s`;
 
-        setErrorMsg(`10-Minute Cooldown Active. Please wait ${cooldownStr} before opening a new trade on ATF Instant.`);
+        setErrorMsg(`🚫 10-Minute Calm Down Cooldown Active. Please wait ${cooldownStr} before opening a new trade.`);
+
+        setRuleBreachModal({
+          isOpen: true,
+          title: '🚫 Trade Blocked: 10-Minute Cooldown Active',
+          subtitle: `👇 Calm Down Timer Remaining: ${cooldownStr}`,
+          type: 'cooldown',
+          message: `Your account is currently in a 10-minute calm down cooldown.`,
+          details: `This cooldown period is active on your Instant Account following a 2-minute hold rule violation or trade closure. Please wait ${cooldownStr} before attempting to execute another trade.`
+        });
 
         // Record warning log in Firestore ruleViolations
         const violationId = 'VIO-' + Math.floor(100000 + Math.random() * 900000);
@@ -1312,158 +1418,6 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 </form>
               </div>
 
-              {/* MASTER ENGINE VALIDATION PANEL */}
-              <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-4.5 space-y-3.5 shadow-xl">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider font-mono">
-                    Master Price Engine Validation
-                  </h3>
-                  <span className="text-[9px] px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 font-mono rounded font-bold uppercase tracking-wider animate-pulse">
-                    Live Validated
-                  </span>
-                </div>
-
-                <div className="space-y-2 font-mono text-xs">
-                  {(() => {
-                    const decimals = DECIMAL_PLACES[selectedSymbol.symbol] || 4;
-                    const live = (activeSelectedSymbol as any).last !== undefined 
-                      ? (activeSelectedSymbol as any).last 
-                      : ((activeSelectedSymbol as any).price ?? 0);
-                    const candles = getCandles(selectedSymbol.symbol, timeframe);
-                    const lastCandle = candles.length > 0 ? candles[candles.length - 1] : null;
-                    const candleOpen = lastCandle ? lastCandle.open : live;
-                    const candleHigh = lastCandle ? lastCandle.high : live;
-                    const candleLow = lastCandle ? lastCandle.low : live;
-                    const candleClose = lastCandle ? lastCandle.close : live;
-                    const trendInfo = symbolTrendState[selectedSymbol.symbol];
-                    const trendState = trendInfo?.state || 'Ranging';
-                    const exec = lastExecutionPrice !== null ? lastExecutionPrice : live;
-                    const liveVsCandleDiff = Math.abs(live - candleClose);
-
-                    const isSynchronized = liveVsCandleDiff < 0.0001;
-
-                    const tfStatus = getTimeframeStatus(timeframe);
-                    const engineMetrics = getCandleEngineMetrics(selectedSymbol.symbol);
-
-                    return (
-                      <>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Last Saved Candle Time:</span>
-                          <span className="text-emerald-400 font-bold font-mono text-[11px]">{engineMetrics.lastSavedCandleTime}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current UTC Time:</span>
-                          <span className="text-blue-400 font-bold font-mono text-[11px]">{engineMetrics.currentUTCTime}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Missing Candles Generated:</span>
-                          <span className="text-amber-400 font-bold font-mono text-[11px]">+{engineMetrics.missingCandlesGenerated}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Engine Running Status:</span>
-                          <span className="text-emerald-300 font-semibold font-mono text-[11px]">{engineMetrics.engineRunningStatus}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Server Time:</span>
-                          <span className="text-cyan-400 font-bold">{tfStatus.serverTime}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Price:</span>
-                          <span className="text-white font-bold">${live.toFixed(decimals)}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Candle Open:</span>
-                          <span className="text-slate-200 font-semibold">${candleOpen.toFixed(decimals)}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Candle High:</span>
-                          <span className="text-emerald-400 font-semibold">${candleHigh.toFixed(decimals)}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Candle Low:</span>
-                          <span className="text-rose-400 font-semibold">${candleLow.toFixed(decimals)}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Candle Close:</span>
-                          <span className="text-white font-bold">${candleClose.toFixed(decimals)}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Candle Start Time:</span>
-                          <span className="text-slate-300 font-medium">{tfStatus.candleStartFormatted}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Candle End Time:</span>
-                          <span className="text-slate-300 font-medium">{tfStatus.candleEndFormatted}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">{timeframe} Candle Remaining:</span>
-                          <span className="text-amber-300 font-bold">{tfStatus.secondsRemaining}s</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Current Trend State:</span>
-                          <span className="text-amber-400 font-bold uppercase tracking-wide">{trendState}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/5 pb-1">
-                          <span className="text-slate-400">Execution Price:</span>
-                          <span className="text-slate-300 font-medium">${exec.toFixed(decimals)}</span>
-                        </div>
-
-                        {/* All timeframes countdown section */}
-                        <div className="pt-2">
-                          <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1">
-                            Timeframe Countdown Status
-                          </div>
-                          <div className="grid grid-cols-4 gap-1 text-[10px]">
-                            {['1m', '5m', '15m', '30m', '1H', '4H', '1D'].map((tf) => {
-                              const status = getTimeframeStatus(tf);
-                              return (
-                                <div key={tf} className="bg-white/5 rounded px-1.5 py-1 flex justify-between items-center">
-                                  <span className="text-slate-400 font-bold">{tf}:</span>
-                                  <span className="text-emerald-400 font-mono font-bold">{status.secondsRemaining}s</span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {isSynchronized ? (
-                          <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center justify-between text-[10px] text-emerald-400 font-semibold uppercase tracking-wider mt-2">
-                            <div className="flex items-center space-x-2">
-                              <span className="w-2 h-2 bg-emerald-400 rounded-full animate-ping shrink-0" />
-                              <span>Synchronized (Diff = 0.0000)</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await purgeAndRebuildAllCandles();
-                                setSuccessMsg("Chart history rebuilt & resynced!");
-                              }}
-                              className="px-2 py-0.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded text-[9px] font-bold"
-                            >
-                              Reset
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-between text-[10px] text-amber-400 font-semibold uppercase tracking-wider mt-2">
-                            <span>Resyncing Engine...</span>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await purgeAndRebuildAllCandles();
-                                setSuccessMsg("Chart history rebuilt & resynced!");
-                              }}
-                              className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded text-[9px] font-bold"
-                            >
-                              Reset
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-
             </div>
 
             {/* RIGHT AREA: TV CHART AND TRANSACTIONS PANELS (Col Span 8) */}
@@ -1886,6 +1840,66 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 Confirm Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* RULE BREACH / PHASE PASS WARNING POPUP MODAL */}
+      {ruleBreachModal && ruleBreachModal.isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+          <div className={`border-2 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl relative ${
+            ruleBreachModal.type === 'success' 
+              ? 'bg-[#0b192e] border-emerald-500/50 shadow-emerald-950/40' 
+              : 'bg-[#0f172a] border-amber-500/50 shadow-amber-950/40'
+          }`}>
+            <div className="flex items-center space-x-3.5">
+              <div className={`w-12 h-12 rounded-2xl border flex items-center justify-center shrink-0 ${
+                ruleBreachModal.type === 'success'
+                  ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                  : 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+              }`}>
+                {ruleBreachModal.type === 'success' ? (
+                  <Award className="w-6 h-6 animate-bounce" />
+                ) : (
+                  <AlertTriangle className="w-6 h-6 animate-pulse" />
+                )}
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wider">{ruleBreachModal.title}</h3>
+                {ruleBreachModal.subtitle && (
+                  <p className={`text-xs font-semibold mt-0.5 ${
+                    ruleBreachModal.type === 'success' ? 'text-emerald-400' : 'text-amber-400'
+                  }`}>
+                    {ruleBreachModal.subtitle}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className={`p-4 rounded-2xl space-y-2 text-xs border ${
+              ruleBreachModal.type === 'success'
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-100'
+                : 'bg-amber-500/10 border-amber-500/20 text-slate-200'
+            }`}>
+              <p className="whitespace-pre-line leading-relaxed font-medium">{ruleBreachModal.message}</p>
+              {ruleBreachModal.details && (
+                <p className="text-[11px] text-slate-300 pt-2 border-t border-white/10 leading-relaxed font-mono">
+                  {ruleBreachModal.details}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setRuleBreachModal(null)}
+              className={`w-full h-11 font-extrabold rounded-full text-xs uppercase tracking-wider transition-colors shadow-lg ${
+                ruleBreachModal.type === 'success'
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
+                  : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+              }`}
+            >
+              {ruleBreachModal.type === 'success' ? 'Awesome, Got It!' : 'I Understand & Acknowledge Warning'}
+            </button>
           </div>
         </div>
       )}

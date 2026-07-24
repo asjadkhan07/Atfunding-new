@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as LucideIcons from 'lucide-react';
 import { 
   Users, Layers, DollarSign, Award, Gift, Ticket, ListFilter, Check, X, Plus, Trash2, Shield, RefreshCw,
   Coins, Search, Filter, Image as ImageIcon, AlertTriangle, AlertCircle, Eye, HelpCircle, Mail, MessageSquare, Settings,
-  Activity, Clock, Tag, Share2, Bell, Edit3
+  Activity, Clock, Tag, Share2, Bell, Edit3, Upload, FileText, Send, Download, Sparkles, Sliders
 } from 'lucide-react';
-import { TradingAccount, UserProfile, PayoutRequest, Affiliate, Coupon, Trade, Order, PaymentSettings, AccountType, SocialLink, PaymentMethod, SupportTicket, TicketMessage, Announcement, Task, TaskSubmission, RewardStoreItem, RewardRedemption, CustomLink, ReferralWithdrawal } from '../types';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+import { TradingAccount, UserProfile, PayoutRequest, Affiliate, Coupon, Trade, Order, PaymentSettings, AccountType, SocialLink, PaymentMethod, SupportTicket, TicketMessage, Announcement, Task, TaskSubmission, RewardStoreItem, RewardRedemption, CustomLink, ReferralWithdrawal, Certificate, CertificateTemplate } from '../types';
 import { CHALLENGE_PACKAGES } from '../constants';
 import { db, auth } from '../firebase';
 import { firebaseTelemetry } from '../firebaseTelemetry';
@@ -13,6 +15,7 @@ import { updatePassword } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
 import EmailCenter from './EmailCenter';
 import { getCandleEngineMetrics } from '../core/candleEngine';
+import LuxuryCertificate, { DEFAULT_CERT_TEMPLATE } from './LuxuryCertificate';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification'>('stats');
@@ -215,6 +218,31 @@ export default function AdminPanel() {
   const [broadcastBody, setBroadcastBody] = useState('');
   const [broadcastMsg, setBroadcastMsg] = useState('');
   const [isBroadcasting, setIsBroadcasting] = useState(false);
+
+  // Certificate Manager States
+  const [certificates, setCertificates] = useState<Certificate[]>([]);
+  const [selectedCertUserId, setSelectedCertUserId] = useState<string>('');
+  const [certUserName, setCertUserName] = useState('');
+  const [certEmail, setCertEmail] = useState('');
+  const [certAccountSize, setCertAccountSize] = useState<string>('$10,000');
+  const [certAccountType, setCertAccountType] = useState<string>('2 Step');
+  const [certPhase, setCertPhase] = useState<string>('Funded');
+  const [certIssueDate, setCertIssueDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [certIdInput, setCertIdInput] = useState<string>('');
+  const [certUserPhoto, setCertUserPhoto] = useState<string>('');
+  const [certSearchQuery, setCertSearchQuery] = useState<string>('');
+  const [certFilterPhase, setCertFilterPhase] = useState<string>('All');
+  const [certMsg, setCertMsg] = useState<string>('');
+  const [isGeneratingCert, setIsGeneratingCert] = useState<boolean>(false);
+
+  // Certificate Template Editor States
+  const [activeCertSubTab, setActiveCertSubTab] = useState<'issued' | 'editor'>('issued');
+  const [certTemplate, setCertTemplate] = useState<CertificateTemplate>(DEFAULT_CERT_TEMPLATE);
+  const [isSavingCertTemplate, setIsSavingCertTemplate] = useState<boolean>(false);
+  const [previewCertModal, setPreviewCertModal] = useState<Certificate | null>(null);
+  const [isSendingCertEmail, setIsSendingCertEmail] = useState<boolean>(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
+  const certModalRef = useRef<HTMLDivElement>(null);
 
   // --- UPGRADE SECTION STATES ---
   // 1. Dynamic Social Links Manager
@@ -686,6 +714,27 @@ export default function AdminPanel() {
       console.warn("Custom links subscription error:", err);
     });
 
+    // 26. Realtime Certificates
+    const unsubCertificates = onSnapshot(collection(db, 'certificates'), (snapshot) => {
+      const list: Certificate[] = [];
+      snapshot.forEach(docSnap => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as Certificate);
+      });
+      list.sort((a, b) => new Date(b.createdAt || b.issueDate || 0).getTime() - new Date(a.createdAt || a.issueDate || 0).getTime());
+      setCertificates(list);
+    }, (err) => {
+      console.warn("Realtime certificates subscription error:", err);
+    });
+
+    // 27. Realtime Certificate Template
+    const unsubCertTemplate = onSnapshot(doc(db, 'settings', 'certificate_template'), (docSnap) => {
+      if (docSnap.exists()) {
+        setCertTemplate(prev => ({ ...prev, ...docSnap.data() }));
+      }
+    }, (err) => {
+      console.warn("Realtime certificate template subscription error:", err);
+    });
+
     return () => {
       unsubUsers();
       unsubAccounts();
@@ -703,6 +752,8 @@ export default function AdminPanel() {
       unsubPaymentMethods();
       unsubTickets();
       unsubAnnouncements();
+      unsubCertificates();
+      unsubCertTemplate();
       unsubFaqs();
       unsubRules();
       unsubHowItWorks();
@@ -1349,6 +1400,241 @@ export default function AdminPanel() {
     }
   };
 
+  // --- CERTIFICATE MANAGER HANDLERS ---
+  const handleGenerateCertificate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCertMsg('');
+    if (!certUserName.trim() || !certEmail.trim()) {
+      setCertMsg('Please enter Trader Name and Email.');
+      return;
+    }
+
+    setIsGeneratingCert(true);
+    try {
+      const generatedId = certIdInput.trim() || `CERT-${Math.floor(100000 + Math.random() * 900000)}`;
+      
+      const targetUser = users.find(u => u.email?.toLowerCase() === certEmail.trim().toLowerCase());
+      const targetUid = targetUser ? targetUser.uid : `user_${Math.random().toString(36).substring(2, 9)}`;
+
+      const certData: Certificate = {
+        id: generatedId,
+        certificateId: generatedId,
+        userId: targetUid,
+        userName: certUserName.trim(),
+        name: certUserName.trim(),
+        email: certEmail.trim().toLowerCase(),
+        accountSize: certAccountSize,
+        accountType: certAccountType,
+        phase: certPhase,
+        issueDate: certIssueDate || new Date().toISOString().split('T')[0],
+        date: certIssueDate || new Date().toISOString().split('T')[0],
+        userPhoto: certUserPhoto.trim() || '',
+        certificateImage: certUserPhoto.trim() || '',
+        createdAt: new Date().toISOString(),
+        type: 'passed_evaluation'
+      };
+
+      await setDoc(doc(db, 'certificates', generatedId), certData);
+
+      if (targetUser) {
+        const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+        await setDoc(doc(db, 'notifications', notifId), {
+          id: notifId,
+          userId: targetUser.uid,
+          title: '🎉 New Certificate Awarded!',
+          message: `Congratulations ${certUserName}! You have been awarded a ${certPhase} Certificate for your ${certAccountSize} account. View it in your Certificates tab.`,
+          type: 'success',
+          read: false,
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      setCertMsg(`Success! Certificate #${generatedId} issued for ${certUserName}.`);
+      setCertUserName('');
+      setCertEmail('');
+      setCertIdInput('');
+      setCertUserPhoto('');
+    } catch (err: any) {
+      console.error("Generate Certificate Error:", err);
+      setCertMsg("Error generating certificate: " + (err.message || "Unknown error"));
+    } finally {
+      setIsGeneratingCert(false);
+    }
+  };
+
+  const handleDeleteCertificate = async (certId: string) => {
+    if (!window.confirm("Are you sure you want to delete this certificate record?")) return;
+    try {
+      await deleteDoc(doc(db, 'certificates', certId));
+    } catch (err: any) {
+      console.error("Delete certificate error:", err);
+      alert("Could not delete certificate.");
+    }
+  };
+
+  const handleExportCertificatesCSV = () => {
+    if (certificates.length === 0) {
+      alert("No certificate records available to export.");
+      return;
+    }
+
+    const headers = ["Certificate ID", "Trader Name", "Email", "Account Size", "Account Type", "Phase", "Issue Date"];
+    const rows = certificates.map(c => [
+      `"${c.certificateId || c.id}"`,
+      `"${c.name || c.userName || ''}"`,
+      `"${c.email || ''}"`,
+      `"${c.accountSize || ''}"`,
+      `"${c.accountType || ''}"`,
+      `"${c.phase || ''}"`,
+      `"${c.issueDate || c.date || ''}"`
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `ATFunding_Certificates_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleSaveCertTemplate = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSavingCertTemplate(true);
+    setCertMsg('');
+    try {
+      await setDoc(doc(db, 'settings', 'certificate_template'), {
+        ...certTemplate,
+        updatedAt: new Date().toISOString()
+      });
+      setCertMsg('Success! Certificate Template saved to Firestore.');
+    } catch (err: any) {
+      console.error("Save cert template error:", err);
+      setCertMsg('Error saving template: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsSavingCertTemplate(false);
+    }
+  };
+
+  const handleCertImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'bgImageUrl' | 'logoUrl' | 'signatureUrl') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        const maxDim = 1200;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const base64Url = canvas.toDataURL('image/png', 0.85);
+          setCertTemplate(prev => ({ ...prev, [field]: base64Url }));
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSendCertEmail = async (cert: Certificate) => {
+    if (!cert.email) {
+      alert("Trader email address is required.");
+      return;
+    }
+    setIsSendingCertEmail(true);
+    try {
+      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+      const certTitle = cert.customTitle || certTemplate.title || 'CERTIFICATE OF ACHIEVEMENT';
+      const certMessage = `Congratulations ${cert.name || cert.userName}! Your official ${certTitle} (#${cert.certificateId || cert.id}) has been issued. View and download it anytime from your Dashboard Certificates tab.`;
+
+      if (cert.userId) {
+        await setDoc(doc(db, 'notifications', notifId), {
+          id: notifId,
+          userId: cert.userId,
+          title: `🏆 ${certTitle} Issued!`,
+          message: certMessage,
+          type: 'success',
+          read: false,
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      const emailQueueId = 'EMAIL-' + Math.floor(100000 + Math.random() * 900000);
+      await setDoc(doc(db, 'email_queue', emailQueueId), {
+        id: emailQueueId,
+        recipient: cert.email,
+        subject: `🏆 Official ATFunding Certificate Issued - ${cert.certificateId || cert.id}`,
+        message: `Dear ${cert.name || cert.userName},\n\nCongratulations! Your official ATFunding Certificate of Achievement has been issued.\n\nCertificate ID: ${cert.certificateId || cert.id}\nAccount Size: ${cert.accountSize}\nPhase: ${cert.phase}\nIssue Date: ${cert.issueDate || cert.date}\n\nYou can view, download PNG/PDF, and print your certificate directly from your ATFunding Dashboard under the Certificates section.\n\nBest regards,\n${certTemplate.companyName || 'ATFunding'} Team`,
+        status: 'pending',
+        userId: cert.userId || '',
+        createdAt: new Date().toISOString()
+      });
+
+      alert(`Email & notification successfully sent to ${cert.email}!`);
+    } catch (err: any) {
+      console.error("Send cert email error:", err);
+      alert("Could not send email: " + (err.message || "Unknown error"));
+    } finally {
+      setIsSendingCertEmail(false);
+    }
+  };
+
+  const handleDownloadCertPdf = async (targetRef: React.RefObject<HTMLDivElement>, fileName: string) => {
+    if (!targetRef.current) return;
+    setIsDownloadingPdf(true);
+    try {
+      const canvas = await html2canvas(targetRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#020617'
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'px',
+        format: [canvas.width, canvas.height]
+      });
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      pdf.save(`${fileName}.pdf`);
+    } catch (err: any) {
+      console.error("PDF download error:", err);
+      alert("Error downloading PDF: " + err.message);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
+  const formatPreviewMessage = (msg: string, certName: string, accountSize: string, phase: string, date: string, certId: string) => {
+    if (!msg) return `has successfully achieved ${phase} on a ${accountSize} account.`;
+    return msg
+      .replace(/{USER_NAME}/gi, certName || 'Asjad Khan')
+      .replace(/\[USER NAME\]/gi, certName || 'Asjad Khan')
+      .replace(/{ACCOUNT_SIZE}/gi, accountSize || '$100,000')
+      .replace(/\[ACCOUNT SIZE\]/gi, accountSize || '$100,000')
+      .replace(/{PHASE}/gi, phase || 'Phase 1')
+      .replace(/\[PHASE\]/gi, phase || 'Phase 1')
+      .replace(/{DATE}/gi, date || new Date().toISOString().split('T')[0])
+      .replace(/\[DATE\]/gi, date || new Date().toISOString().split('T')[0])
+      .replace(/{CERTIFICATE_ID}/gi, certId || 'CERT-100001')
+      .replace(/\[CERTIFICATE ID\]/gi, certId || 'CERT-100001');
+  };
+
   const compressQrCode = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -1820,6 +2106,7 @@ export default function AdminPanel() {
           { id: 'users', label: 'Users', icon: Users },
           { id: 'accounts', label: 'Accounts', icon: Gift },
           { id: 'orders', label: 'Payments', icon: Coins },
+          { id: 'certificates', label: 'Certificate Manager', icon: Award },
           { id: 'challenge_reviews', label: 'Challenge Reviews', icon: Award },
           { id: 'referral_withdrawals', label: 'Referral Withdrawals', icon: DollarSign },
           { id: 'payouts', label: 'Payout Requests', icon: DollarSign },
@@ -2166,6 +2453,823 @@ export default function AdminPanel() {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB: CERTIFICATE MANAGER */}
+          {activeTab === 'certificates' && (
+            <div className="space-y-6 animate-fade-in">
+              {/* Top Certificate Mode Sub-Navigation Bar */}
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white/5 border border-white/10 rounded-3xl p-4 backdrop-blur-sm shadow-xl">
+                <div>
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Award className="w-5 h-5 text-amber-400" />
+                    <span>Certificate Hub & Customizer</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Design custom templates, issue awards, download PDFs, and send via email.</p>
+                </div>
+
+                <div className="flex items-center p-1 bg-black/40 border border-white/10 rounded-2xl">
+                  <button
+                    type="button"
+                    onClick={() => setActiveCertSubTab('issued')}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                      activeCertSubTab === 'issued'
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Award className="w-4 h-4" />
+                    <span>Issued Certificates ({certificates.length})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveCertSubTab('editor')}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                      activeCertSubTab === 'editor'
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <Sliders className="w-4 h-4" />
+                    <span>Certificate Template Editor</span>
+                  </button>
+                </div>
+              </div>
+
+              {certMsg && (
+                <div className={`p-4 rounded-2xl text-xs font-bold shadow-lg flex items-center justify-between ${
+                  certMsg.startsWith('Success') ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-400 border border-red-500/30'
+                }`}>
+                  <span>{certMsg}</span>
+                  <button type="button" onClick={() => setCertMsg('')} className="text-slate-400 hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* MODE 1: ISSUED CERTIFICATES & ISSUANCE FORM */}
+              {activeCertSubTab === 'issued' && (
+                <>
+                  {/* Top Certificate Analytics Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                    <div className="bg-white/5 border border-amber-500/30 rounded-3xl p-5 backdrop-blur-sm shadow-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-amber-400 font-bold uppercase tracking-wider">Total Issued</p>
+                        <p className="text-2xl font-black text-amber-400 mt-1.5 font-mono">{certificates.length}</p>
+                      </div>
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/20 flex items-center justify-center">
+                        <Award className="w-5 h-5 text-amber-400" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white/5 border border-blue-500/30 rounded-3xl p-5 backdrop-blur-sm shadow-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Phase 1</p>
+                        <p className="text-2xl font-black text-blue-400 mt-1.5 font-mono">
+                          {certificates.filter(c => (c.phase || '').toLowerCase().includes('phase 1')).length}
+                        </p>
+                      </div>
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/15 border border-blue-500/20 flex items-center justify-center">
+                        <Award className="w-5 h-5 text-blue-400" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white/5 border border-cyan-500/30 rounded-3xl p-5 backdrop-blur-sm shadow-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">Phase 2</p>
+                        <p className="text-2xl font-black text-cyan-400 mt-1.5 font-mono">
+                          {certificates.filter(c => (c.phase || '').toLowerCase().includes('phase 2')).length}
+                        </p>
+                      </div>
+                      <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/20 flex items-center justify-center">
+                        <Award className="w-5 h-5 text-cyan-400" />
+                      </div>
+                    </div>
+
+                    <div className="bg-white/5 border border-emerald-500/30 rounded-3xl p-5 backdrop-blur-sm shadow-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">Funded</p>
+                        <p className="text-2xl font-black text-emerald-400 mt-1.5 font-mono">
+                          {certificates.filter(c => (c.phase || '').toLowerCase().includes('funded')).length}
+                        </p>
+                      </div>
+                      <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center">
+                        <Award className="w-5 h-5 text-emerald-400" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Issue Form Section */}
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-5">
+                    <div className="border-b border-white/10 pb-4">
+                      <h3 className="text-base font-bold text-white flex items-center gap-2">
+                        <Plus className="w-5 h-5 text-amber-400" />
+                        <span>Issue New Performance Certificate</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">Award official certificates automatically tied to user accounts.</p>
+                    </div>
+
+                    <form onSubmit={handleGenerateCertificate} className="space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="space-y-1 sm:col-span-2">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Select Trader / User *</label>
+                          <select
+                            required
+                            value={selectedCertUserId}
+                            onChange={(e) => {
+                              const uid = e.target.value;
+                              setSelectedCertUserId(uid);
+                              const u = users.find(x => x.uid === uid);
+                              if (u) {
+                                const uName = u.displayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || 'Trader';
+                                setCertUserName(uName);
+                                setCertEmail(u.email);
+                                
+                                // Auto detect account size & phase if trading account exists
+                                const userAcc = accounts.find(a => a.userId === uid);
+                                if (userAcc) {
+                                  if (userAcc.size) setCertAccountSize(`$${userAcc.size.toLocaleString()}`);
+                                  if (userAcc.phase) setCertPhase(userAcc.phase === 3 ? 'Funded' : `Phase ${userAcc.phase}`);
+                                }
+                              } else {
+                                setCertUserName('');
+                                setCertEmail('');
+                              }
+                            }}
+                            className="w-full h-10 bg-black/40 border border-amber-500/30 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400 font-bold"
+                          >
+                            <option value="">-- Choose Registered Trader --</option>
+                            {users.map(u => (
+                              <option key={u.uid} value={u.uid} className="bg-slate-900 text-white">
+                                {u.displayName || u.name || 'Trader'} ({u.email})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {selectedCertUserId && (
+                          <div className="space-y-1 sm:col-span-2 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5 flex items-center justify-between">
+                            <div>
+                              <span className="text-[10px] font-bold text-amber-400 block uppercase">Selected Trader</span>
+                              <span className="text-xs font-black text-white">{certUserName}</span>
+                              <span className="text-[10px] text-slate-400 font-mono ml-2">({certEmail})</span>
+                            </div>
+                            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-mono font-bold px-2 py-0.5 rounded">
+                              Auto-Verified
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Account Size</label>
+                          <select
+                            value={certAccountSize}
+                            onChange={(e) => setCertAccountSize(e.target.value)}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="$1,000">$1,000</option>
+                            <option value="$5,000">$5,000</option>
+                            <option value="$10,000">$10,000</option>
+                            <option value="$25,000">$25,000</option>
+                            <option value="$50,000">$50,000</option>
+                            <option value="$100,000">$100,000</option>
+                            <option value="$200,000">$200,000</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Phase</label>
+                          <select
+                            value={certPhase}
+                            onChange={(e) => setCertPhase(e.target.value)}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="Trial">Trial</option>
+                            <option value="Phase 1">Phase 1</option>
+                            <option value="Phase 2">Phase 2</option>
+                            <option value="Funded">Funded</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Account Type</label>
+                          <select
+                            value={certAccountType}
+                            onChange={(e) => setCertAccountType(e.target.value)}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                          >
+                            <option value="Trial">Trial</option>
+                            <option value="Instant">Instant</option>
+                            <option value="1 Step">1 Step</option>
+                            <option value="2 Step">2 Step</option>
+                            <option value="Funded">Funded</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Issue Date</label>
+                          <input
+                            type="date"
+                            value={certIssueDate}
+                            onChange={(e) => setCertIssueDate(e.target.value)}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Certificate ID (Optional)</label>
+                          <input
+                            type="text"
+                            placeholder="Auto-generated if empty"
+                            value={certIdInput}
+                            onChange={(e) => setCertIdInput(e.target.value)}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-2">
+                        <button
+                          type="submit"
+                          disabled={isGeneratingCert}
+                          className="px-6 h-11 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-amber-500/20 cursor-pointer flex items-center gap-2"
+                        >
+                          <Award className="w-4 h-4" />
+                          <span>{isGeneratingCert ? 'Generating...' : 'Issue Certificate'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Certificates Table */}
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                      <div>
+                        <h3 className="text-base font-bold text-white flex items-center gap-2">
+                          <Award className="w-5 h-5 text-amber-400" />
+                          <span>Issued Certificates List</span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Manage, preview, download PDF, or dispatch via email.</p>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={handleExportCertificatesCSV}
+                          className="px-3.5 py-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/30 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Export CSV</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Filters */}
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                        <input
+                          type="text"
+                          placeholder="Search Name, Email, Certificate ID..."
+                          value={certSearchQuery}
+                          onChange={(e) => setCertSearchQuery(e.target.value)}
+                          className="w-full h-10 bg-black/40 border border-white/10 rounded-xl pl-10 pr-4 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+
+                      <select
+                        value={certFilterPhase}
+                        onChange={(e) => setCertFilterPhase(e.target.value)}
+                        className="h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                      >
+                        <option value="All">All Phases</option>
+                        <option value="Phase 1">Phase 1</option>
+                        <option value="Phase 2">Phase 2</option>
+                        <option value="Funded">Funded</option>
+                        <option value="Trial">Trial</option>
+                      </select>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs text-slate-300">
+                        <thead className="bg-black/40 text-slate-400 uppercase font-mono text-[10px]">
+                          <tr>
+                            <th className="p-3 rounded-l-xl">Cert ID</th>
+                            <th className="p-3">Trader Name</th>
+                            <th className="p-3">Email</th>
+                            <th className="p-3">Account Size</th>
+                            <th className="p-3">Phase</th>
+                            <th className="p-3">Issue Date</th>
+                            <th className="p-3 text-right rounded-r-xl">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {certificates
+                            .filter(c => {
+                              const q = certSearchQuery.toLowerCase().trim();
+                              const matchesQuery = !q || 
+                                (c.name || '').toLowerCase().includes(q) ||
+                                (c.userName || '').toLowerCase().includes(q) ||
+                                (c.email || '').toLowerCase().includes(q) ||
+                                (c.certificateId || c.id || '').toLowerCase().includes(q);
+                              const matchesPhase = certFilterPhase === 'All' || (c.phase || '').toLowerCase() === certFilterPhase.toLowerCase();
+                              return matchesQuery && matchesPhase;
+                            })
+                            .map(c => (
+                              <tr key={c.id} className="hover:bg-white/5 transition-colors">
+                                <td className="p-3 font-mono text-amber-400 font-bold">{c.certificateId || c.id}</td>
+                                <td className="p-3 font-bold text-white">{c.name || c.userName || 'Trader'}</td>
+                                <td className="p-3 text-slate-400 font-mono">{c.email}</td>
+                                <td className="p-3 text-emerald-400 font-bold font-mono">{c.accountSize}</td>
+                                <td className="p-3">
+                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                    {c.phase || 'Phase 1'}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono text-slate-400">{c.issueDate || c.date}</td>
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end space-x-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewCertModal(c)}
+                                      className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors cursor-pointer"
+                                      title="Preview Certificate"
+                                    >
+                                      <Eye className="w-4 h-4" />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      disabled={isSendingCertEmail}
+                                      onClick={() => handleSendCertEmail(c)}
+                                      className="p-1.5 text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors cursor-pointer"
+                                      title="Send Certificate to Email"
+                                    >
+                                      <Send className="w-4 h-4" />
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteCertificate(c.id)}
+                                      className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
+                                      title="Delete Certificate"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          {certificates.length === 0 && (
+                            <tr>
+                              <td colSpan={7} className="text-center py-8 text-slate-500">
+                                No certificates issued yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* MODE 2: CERTIFICATE TEMPLATE EDITOR */}
+              {activeCertSubTab === 'editor' && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Template Editor Form */}
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-5">
+                    <div className="border-b border-white/10 pb-4 flex justify-between items-center">
+                      <div>
+                        <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                          <Sliders className="w-5 h-5 text-amber-400" />
+                          <span>Certificate Template Settings</span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">Customize texts, images, signatures, and dynamic variables.</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSaveCertTemplate()}
+                        disabled={isSavingCertTemplate}
+                        className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{isSavingCertTemplate ? 'Saving...' : 'Save Template'}</span>
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveCertTemplate} className="space-y-4">
+                      {/* Image Upload Row */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-black/20 p-4 rounded-2xl border border-white/5">
+                        {/* Background Image Upload */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Background Image</label>
+                          <div className="relative">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleCertImageUpload(e, 'bgImageUrl')}
+                              className="hidden"
+                              id="cert-bg-upload"
+                            />
+                            <label
+                              htmlFor="cert-bg-upload"
+                              className="w-full h-20 border-2 border-dashed border-white/20 hover:border-amber-400 rounded-xl flex flex-col items-center justify-center cursor-pointer p-2 transition-all text-center bg-black/40"
+                            >
+                              {certTemplate.bgImageUrl ? (
+                                <img src={certTemplate.bgImageUrl} alt="BG Preview" className="h-full w-full object-cover rounded-lg" />
+                              ) : (
+                                <>
+                                  <Upload className="w-5 h-5 text-amber-400 mb-1" />
+                                  <span className="text-[10px] text-slate-300 font-bold">Upload Custom BG</span>
+                                </>
+                              )}
+                            </label>
+                          </div>
+                          {certTemplate.bgImageUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setCertTemplate(p => ({ ...p, bgImageUrl: '' }))}
+                              className="text-[10px] text-red-400 hover:underline block mx-auto"
+                            >
+                              Remove Background
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Company Logo Upload */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-blue-400 uppercase tracking-wider block">Company Logo</label>
+                          <div className="relative">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleCertImageUpload(e, 'logoUrl')}
+                              className="hidden"
+                              id="cert-logo-upload"
+                            />
+                            <label
+                              htmlFor="cert-logo-upload"
+                              className="w-full h-20 border-2 border-dashed border-white/20 hover:border-blue-400 rounded-xl flex flex-col items-center justify-center cursor-pointer p-2 transition-all text-center bg-black/40"
+                            >
+                              {certTemplate.logoUrl ? (
+                                <img src={certTemplate.logoUrl} alt="Logo Preview" className="h-full object-contain rounded-lg" />
+                              ) : (
+                                <>
+                                  <ImageIcon className="w-5 h-5 text-blue-400 mb-1" />
+                                  <span className="text-[10px] text-slate-300 font-bold">Upload Logo</span>
+                                </>
+                              )}
+                            </label>
+                          </div>
+                          {certTemplate.logoUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setCertTemplate(p => ({ ...p, logoUrl: '' }))}
+                              className="text-[10px] text-red-400 hover:underline block mx-auto"
+                            >
+                              Remove Logo
+                            </button>
+                          )}
+                        </div>
+
+                        {/* CEO Signature Upload */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider block">CEO Signature</label>
+                          <div className="relative">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleCertImageUpload(e, 'signatureUrl')}
+                              className="hidden"
+                              id="cert-sig-upload"
+                            />
+                            <label
+                              htmlFor="cert-sig-upload"
+                              className="w-full h-20 border-2 border-dashed border-white/20 hover:border-emerald-400 rounded-xl flex flex-col items-center justify-center cursor-pointer p-2 transition-all text-center bg-black/40"
+                            >
+                              {certTemplate.signatureUrl ? (
+                                <img src={certTemplate.signatureUrl} alt="Signature Preview" className="h-full object-contain filter invert rounded-lg" />
+                              ) : (
+                                <>
+                                  <FileText className="w-5 h-5 text-emerald-400 mb-1" />
+                                  <span className="text-[10px] text-slate-300 font-bold">Upload Signature</span>
+                                </>
+                              )}
+                            </label>
+                          </div>
+                          {certTemplate.signatureUrl && (
+                            <button
+                              type="button"
+                              onClick={() => setCertTemplate(p => ({ ...p, signatureUrl: '' }))}
+                              className="text-[10px] text-red-400 hover:underline block mx-auto"
+                            >
+                              Remove Signature
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Header & Brand Inputs */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Company Name</label>
+                          <input
+                            type="text"
+                            value={certTemplate.companyName}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, companyName: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400 font-bold"
+                            placeholder="e.g. ATFUNDING"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Company Tagline / Subtitle</label>
+                          <input
+                            type="text"
+                            value={certTemplate.companyTagline || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, companyTagline: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="e.g. PROPRIETARY TRADING FIRM"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Certificate Title</label>
+                          <input
+                            type="text"
+                            value={certTemplate.title}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, title: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400 font-bold"
+                            placeholder="e.g. CERTIFICATE OF ACHIEVEMENT"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Subtitle Line</label>
+                          <input
+                            type="text"
+                            value={certTemplate.subtitle}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, subtitle: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="e.g. PROUDLY PRESENTED TO"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Top Badge Text</label>
+                          <input
+                            type="text"
+                            value={certTemplate.badgeText}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, badgeText: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400 font-bold"
+                            placeholder="e.g. VERIFIED FUNDED TRADER"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status Intro Line</label>
+                          <input
+                            type="text"
+                            value={certTemplate.statusIntro || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, statusIntro: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="e.g. HAS OFFICIALLY ACHIEVED"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status Title</label>
+                          <input
+                            type="text"
+                            value={certTemplate.statusTitle || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, statusTitle: e.target.value }))}
+                            className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400 font-bold text-amber-400"
+                            placeholder="e.g. FUNDED TRADER STATUS"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Custom Message Field with Dynamic Variable Tokens */}
+                      <div className="space-y-2 bg-black/20 p-4 rounded-2xl border border-white/5">
+                        <div className="flex justify-between items-center">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">
+                            Custom Certificate Body Text
+                          </label>
+                          <span className="text-[10px] text-slate-400">Click variable tag to insert:</span>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          {['{USER_NAME}', '{ACCOUNT_SIZE}', '{PHASE}', '{DATE}', '{CERTIFICATE_ID}'].map((token) => (
+                            <button
+                              key={token}
+                              type="button"
+                              onClick={() => setCertTemplate(p => ({ ...p, customMessage: p.customMessage + ' ' + token }))}
+                              className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-lg text-[10px] font-mono font-bold transition-all cursor-pointer"
+                            >
+                              + {token}
+                            </button>
+                          ))}
+                        </div>
+
+                        <textarea
+                          rows={4}
+                          value={certTemplate.customMessage}
+                          onChange={(e) => setCertTemplate(p => ({ ...p, customMessage: e.target.value }))}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-400 leading-relaxed font-sans"
+                          placeholder="e.g. For successfully passing {PHASE} evaluation on a {ACCOUNT_SIZE} account."
+                        />
+                      </div>
+
+                      {/* Signatories & Team Details */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-black/20 p-4 rounded-2xl border border-white/5">
+                        {/* CEO Section */}
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Signatory 1 (CEO / Founder)</span>
+                          <input
+                            type="text"
+                            value={certTemplate.ceoName}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, ceoName: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="Name (e.g. Asjad Khan)"
+                          />
+                          <input
+                            type="text"
+                            value={certTemplate.ceoTitle}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, ceoTitle: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="Title (e.g. CEO & FOUNDER)"
+                          />
+                        </div>
+
+                        {/* Risk Team Section */}
+                        <div className="space-y-2">
+                          <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider block">Signatory 2 (Risk Management)</span>
+                          <input
+                            type="text"
+                            value={certTemplate.riskTeamName || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, riskTeamName: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="Name (e.g. Risk Management Team)"
+                          />
+                          <input
+                            type="text"
+                            value={certTemplate.riskTeamTitle || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, riskTeamTitle: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400"
+                            placeholder="Title (e.g. HEAD OF RISK)"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Golden Seal Texts */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-black/20 p-4 rounded-2xl border border-white/5">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Seal Top Text</label>
+                          <input
+                            type="text"
+                            value={certTemplate.sealText1 || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, sealText1: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400 font-mono text-[11px]"
+                            placeholder="e.g. ATFUNDING"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Seal Center Text</label>
+                          <input
+                            type="text"
+                            value={certTemplate.sealText2 || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, sealText2: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400 font-mono text-[11px]"
+                            placeholder="e.g. OFFICIAL"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block">Seal Bottom Text</label>
+                          <input
+                            type="text"
+                            value={certTemplate.sealText3 || ''}
+                            onChange={(e) => setCertTemplate(p => ({ ...p, sealText3: e.target.value }))}
+                            className="w-full h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-amber-400 font-mono text-[11px]"
+                            placeholder="e.g. SEAL OF EXCELLENCE"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Footer Message / Tagline</label>
+                        <input
+                          type="text"
+                          value={certTemplate.footerMessage}
+                          onChange={(e) => setCertTemplate(p => ({ ...p, footerMessage: e.target.value }))}
+                          className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3.5 text-xs text-white focus:outline-none focus:border-amber-400"
+                          placeholder="e.g. THANK YOU FOR TRUSTING ATFUNDING..."
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSavingCertTemplate}
+                        className="w-full h-11 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-amber-500/20 cursor-pointer flex items-center justify-center gap-2 mt-4"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>{isSavingCertTemplate ? 'Saving Changes...' : 'Save Template to Firestore'}</span>
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Live Template Visual Preview */}
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center bg-white/5 border border-white/10 rounded-2xl px-5 py-3">
+                      <div className="flex items-center space-x-2">
+                        <Sparkles className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-bold text-white uppercase tracking-wider">Template Live Canvas Preview</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold">
+                        Auto Updates
+                      </span>
+                    </div>
+
+                    <LuxuryCertificate
+                      certificate={{
+                        id: 'ATF-2026-001',
+                        certificateId: 'ATF-2026-001',
+                        userId: 'demo',
+                        userName: certUserName || 'Asjad Khan',
+                        name: certUserName || 'Asjad Khan',
+                        email: certEmail || 'trader@atfunding.io',
+                        accountSize: certAccountSize || '$10,000',
+                        phase: certPhase || 'Funded',
+                        issueDate: certIssueDate || new Date().toISOString().split('T')[0],
+                        date: certIssueDate || new Date().toISOString().split('T')[0],
+                        createdAt: new Date().toISOString()
+                      }}
+                      template={certTemplate}
+                      containerRef={certModalRef}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Full Screen High-Res Live Certificate Preview Modal */}
+              {previewCertModal && (
+                <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 overflow-y-auto backdrop-blur-md">
+                  <div className="relative w-full max-w-4xl space-y-4 my-8">
+                    {/* Modal Control Bar */}
+                    <div className="flex justify-between items-center bg-slate-900 border border-white/10 rounded-2xl px-5 py-3">
+                      <div className="flex items-center space-x-2 text-white font-bold text-xs">
+                        <Award className="w-4 h-4 text-amber-400" />
+                        <span>Certificate #{previewCertModal.certificateId || previewCertModal.id}</span>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          disabled={isDownloadingPdf}
+                          onClick={() => handleDownloadCertPdf(certModalRef, `ATFunding_Certificate_${previewCertModal.certificateId || previewCertModal.id}`)}
+                          className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold transition-all cursor-pointer shadow-lg shadow-amber-500/20"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>{isDownloadingPdf ? 'Generating PDF...' : 'Download PDF'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={isSendingCertEmail}
+                          onClick={() => handleSendCertEmail(previewCertModal)}
+                          className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-600/20"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>{isSendingCertEmail ? 'Sending...' : 'Send to Email'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setPreviewCertModal(null)}
+                          className="p-2 text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Certificate Card Node */}
+                    <LuxuryCertificate
+                      certificate={previewCertModal}
+                      template={certTemplate}
+                      containerRef={certModalRef}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -3897,12 +5001,12 @@ export default function AdminPanel() {
                 </div>
                 <div className="flex gap-2 font-mono text-xs">
                   <span className="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold">
-                    {accounts.filter(a => a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1').length} Pending Reviews
+                    {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').length} Pending Reviews
                   </span>
                 </div>
               </div>
 
-              {accounts.filter(a => a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1').length === 0 ? (
+              {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').length === 0 ? (
                 <div className="py-16 text-center text-xs text-slate-500">
                   <Award className="w-10 h-10 mx-auto text-slate-600 mb-3 opacity-50" />
                   <p>No challenge accounts currently pending phase evaluation audit.</p>
@@ -3922,14 +5026,17 @@ export default function AdminPanel() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/10 font-medium">
-                      {accounts.filter(a => a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1').map((acc) => {
+                      {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').map((acc) => {
                         const profit = acc.balance - acc.startingBalance;
+                        const isPhase1Pending = acc.status === 'phase2_pending' || acc.phaseStatus === 'phase2_pending' || (acc.phase === 1 && acc.status === 'passed_phase1');
+                        const isPhase2Pending = acc.status === 'funded_pending' || acc.phaseStatus === 'funded_pending' || (acc.phase === 2 && acc.status === 'passed_phase2');
+
                         return (
                           <tr key={acc.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-3 font-mono font-bold text-white">{acc.id}</td>
+                            <td className="py-3 px-3 font-mono font-bold text-white">{acc.login || acc.id}</td>
                             <td className="py-3 px-3 text-slate-300">{acc.userEmail || acc.userId}</td>
                             <td className="py-3 px-3 capitalize font-mono text-slate-300">
-                              {acc.accountType.replace('_', ' ')} (${acc.size.toLocaleString()})
+                              {acc.accountType.replace('_', ' ')} (${acc.size ? acc.size.toLocaleString() : acc.startingBalance.toLocaleString()})
                             </td>
                             <td className="py-3 px-3 font-mono text-emerald-400 font-bold">
                               ${acc.balance.toLocaleString()}
@@ -3939,74 +5046,141 @@ export default function AdminPanel() {
                               ${acc.profitTarget ? acc.profitTarget.toLocaleString() : 'N/A'}
                             </td>
                             <td className="py-3 px-3">
-                              <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
-                                {acc.status} (Phase {acc.phase})
-                              </span>
+                              {isPhase1Pending ? (
+                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase animate-pulse">
+                                  Phase 1 Passed → Phase 2 Pending
+                                </span>
+                              ) : isPhase2Pending ? (
+                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 uppercase animate-pulse">
+                                  Phase 2 Passed → Funded Pending
+                                </span>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
+                                  {acc.status} (Phase {acc.phase})
+                                </span>
+                              )}
                             </td>
                             <td className="py-3 px-3 text-right space-x-2">
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  try {
-                                    // 1. Mark Phase 1 as passed
-                                    await updateDoc(doc(db, 'accounts', acc.id), {
-                                      status: 'passed',
-                                      passedAt: new Date().toISOString()
-                                    });
+                              {isPhase1Pending ? (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      const newPhase2Target = acc.startingBalance * 0.05;
+                                      await updateDoc(doc(db, 'accounts', acc.id), {
+                                        phase: 2,
+                                        status: 'active',
+                                        phaseStatus: 'phase2_active',
+                                        balance: acc.startingBalance,
+                                        equity: acc.startingBalance,
+                                        dailyStartingBalance: acc.startingBalance,
+                                        dailyStartingEquity: acc.startingBalance,
+                                        profitTarget: newPhase2Target,
+                                        approvedAt: new Date().toISOString()
+                                      });
 
-                                    // 2. Provision Phase 2 Account for trader
-                                    const nextPhase = acc.phase + 1;
-                                    const newAccId = 'AT-' + Math.floor(100000 + Math.random() * 900000);
-                                    const matchedPkg = CHALLENGE_PACKAGES.find(p => p.type === acc.accountType && p.size === acc.size) || CHALLENGE_PACKAGES[0];
+                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                                      await setDoc(doc(db, 'notifications', notifId), {
+                                        id: notifId,
+                                        userId: acc.userId,
+                                        title: 'Phase 2 Account Approved! 🎉',
+                                        message: `Congratulations! Your Phase 1 performance was verified by the Admin team. Account #${acc.login || acc.id} is now active in Phase 2 Evaluation. Target: 5% ($${newPhase2Target.toLocaleString()}).`,
+                                        type: 'success',
+                                        read: false,
+                                        createdAt: new Date().toISOString()
+                                      });
 
-                                    const phase2Acc: TradingAccount = {
-                                      id: newAccId,
-                                      userId: acc.userId,
-                                      userEmail: acc.userEmail,
-                                      accountType: acc.accountType,
-                                      size: acc.size,
-                                      balance: acc.size,
-                                      startingBalance: acc.size,
-                                      equity: acc.size,
-                                      dailyStartingBalance: acc.size,
-                                      dailyStartingEquity: acc.size,
-                                      phase: nextPhase,
-                                      status: 'active',
-                                      login: String(Math.floor(2000000 + Math.random() * 8000000)),
-                                      password: Math.random().toString(36).substring(2, 10).toUpperCase(),
-                                      platform: 'ATTerminal',
-                                      server: 'ATFunding-DemoServer',
-                                      profitTarget: matchedPkg.profitTargetPercent > 0 ? (acc.size * (matchedPkg.profitTargetPercent * 0.6) / 100) : 0,
-                                      dailyDrawdownLimit: acc.size * matchedPkg.dailyDrawdownPercent / 100,
-                                      maxDrawdownLimit: acc.size * matchedPkg.maxDrawdownPercent / 100,
-                                      createdAt: new Date().toISOString()
-                                    };
+                                      alert(`Phase 2 approved successfully for Account #${acc.login || acc.id}! Account is now active in Phase 2.`);
+                                      fetchAllData();
+                                    } catch (err: any) {
+                                      console.error("Failed to approve Phase 2:", err);
+                                      alert("Error approving Phase 2: " + err.message);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-full text-[10px] transition-colors uppercase tracking-wider shadow-md shadow-amber-500/20"
+                                >
+                                  Approve Phase 2
+                                </button>
+                              ) : isPhase2Pending ? (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await updateDoc(doc(db, 'accounts', acc.id), {
+                                        phase: 3,
+                                        accountType: 'funded',
+                                        status: 'active',
+                                        phaseStatus: 'funded',
+                                        balance: acc.startingBalance,
+                                        equity: acc.startingBalance,
+                                        dailyStartingBalance: acc.startingBalance,
+                                        dailyStartingEquity: acc.startingBalance,
+                                        profitTarget: 0,
+                                        approvedAt: new Date().toISOString()
+                                      });
 
-                                    await setDoc(doc(db, 'accounts', newAccId), phase2Acc);
+                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                                      await setDoc(doc(db, 'notifications', notifId), {
+                                        id: notifId,
+                                        userId: acc.userId,
+                                        title: 'Funded Account Approved & Unlocked! 🎉',
+                                        message: `Congratulations! Your evaluation is complete! Account #${acc.login || acc.id} is now an official Funded Account. Payout request section is now unlocked!`,
+                                        type: 'success',
+                                        read: false,
+                                        createdAt: new Date().toISOString()
+                                      });
 
-                                    // 3. User Notification
-                                    const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
-                                    await setDoc(doc(db, 'notifications', notifId), {
-                                      id: notifId,
-                                      userId: acc.userId,
-                                      title: `Evaluation Phase ${acc.phase} Approved! 🎉`,
-                                      message: `Congratulations! Your Phase ${acc.phase} evaluation passed compliance review. Your Phase ${nextPhase} Account (${newAccId}) is now active.`,
-                                      type: 'success',
-                                      read: false,
-                                      createdAt: new Date().toISOString()
-                                    });
+                                      alert(`Funded Account approved successfully for Account #${acc.login || acc.id}! Payout section unlocked.`);
+                                      fetchAllData();
+                                    } catch (err: any) {
+                                      console.error("Failed to approve Funded Account:", err);
+                                      alert("Error approving Funded Account: " + err.message);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-full text-[10px] transition-colors uppercase tracking-wider shadow-md shadow-emerald-500/20"
+                                >
+                                  Approve Funded Account
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      const nextPhase = acc.phase + 1;
+                                      await updateDoc(doc(db, 'accounts', acc.id), {
+                                        phase: nextPhase,
+                                        status: 'active',
+                                        phaseStatus: nextPhase === 2 ? 'phase2_active' : 'funded',
+                                        balance: acc.startingBalance,
+                                        equity: acc.startingBalance,
+                                        dailyStartingBalance: acc.startingBalance,
+                                        dailyStartingEquity: acc.startingBalance,
+                                        approvedAt: new Date().toISOString()
+                                      });
 
-                                    alert(`Successfully promoted account ${acc.id} to Phase ${nextPhase} Account (${newAccId})!`);
-                                    fetchAllData();
-                                  } catch (err: any) {
-                                    console.error("Failed to approve phase:", err);
-                                    alert("Error approving phase: " + err.message);
-                                  }
-                                }}
-                                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-full text-[10px] transition-colors"
-                              >
-                                Approve Phase {acc.phase + 1}
-                              </button>
+                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                                      await setDoc(doc(db, 'notifications', notifId), {
+                                        id: notifId,
+                                        userId: acc.userId,
+                                        title: `Phase ${nextPhase} Approved! 🎉`,
+                                        message: `Congratulations! Your account #${acc.login || acc.id} has been approved by the Admin team for Phase ${nextPhase}.`,
+                                        type: 'success',
+                                        read: false,
+                                        createdAt: new Date().toISOString()
+                                      });
+
+                                      alert(`Successfully promoted account ${acc.id} to Phase ${nextPhase}!`);
+                                      fetchAllData();
+                                    } catch (err: any) {
+                                      console.error("Failed to approve phase:", err);
+                                      alert("Error approving phase: " + err.message);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-full text-[10px] transition-colors"
+                                >
+                                  Approve Phase {acc.phase + 1}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={async () => {
