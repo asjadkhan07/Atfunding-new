@@ -115,11 +115,30 @@ export default function App() {
           setScreen('admin-portal');
         } else {
           // Check if user opened a referral link or registration request
-          const params = new URLSearchParams(window.location.search);
-          const hasRef = params.get('ref') || params.get('referral') || params.get('code');
-          const isSignupAction = params.get('action') === 'signup' || params.get('mode') === 'signup' || window.location.hash.includes('register') || window.location.hash.includes('signup');
+          const href = window.location.href;
+          const searchParams = new URLSearchParams(window.location.search);
+          let hasRef = searchParams.get('ref') || searchParams.get('referral') || searchParams.get('code');
 
-          if (hasRef || isSignupAction) {
+          if (!hasRef && window.location.hash.includes('?')) {
+            const hashParams = new URLSearchParams(window.location.hash.substring(window.location.hash.indexOf('?')));
+            hasRef = hashParams.get('ref') || hashParams.get('referral') || hashParams.get('code');
+          }
+
+          if (!hasRef) {
+            const match = href.match(/[?&](ref|referral|code)=([^&/#]+)/i);
+            if (match && match[2]) {
+              hasRef = decodeURIComponent(match[2]);
+            }
+          }
+
+          const isSignupAction = 
+            Boolean(hasRef) || 
+            searchParams.get('action') === 'signup' || 
+            searchParams.get('mode') === 'signup' || 
+            href.toLowerCase().includes('register') || 
+            href.toLowerCase().includes('signup');
+
+          if (isSignupAction) {
             setAuthMode('signup');
             setScreen('auth');
           } else {
@@ -135,8 +154,22 @@ export default function App() {
 
   // Parse and save referral ID from URL on mount & track referral taps
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const referralId = params.get('ref') || params.get('referral') || params.get('code');
+    const href = window.location.href;
+    const searchParams = new URLSearchParams(window.location.search);
+    let referralId = searchParams.get('ref') || searchParams.get('referral') || searchParams.get('code');
+
+    if (!referralId && window.location.hash.includes('?')) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(window.location.hash.indexOf('?')));
+      referralId = hashParams.get('ref') || hashParams.get('referral') || hashParams.get('code');
+    }
+
+    if (!referralId) {
+      const match = href.match(/[?&](ref|referral|code)=([^&/#]+)/i);
+      if (match && match[2]) {
+        referralId = decodeURIComponent(match[2]);
+      }
+    }
+
     if (referralId) {
       const cleanRef = referralId.trim();
       localStorage.setItem('referredBy', cleanRef);

@@ -16,6 +16,7 @@ import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, 
 import EmailCenter from './EmailCenter';
 import { getCandleEngineMetrics } from '../core/candleEngine';
 import LuxuryCertificate, { DEFAULT_CERT_TEMPLATE } from './LuxuryCertificate';
+import { processAffiliateCommission } from '../utils/affiliateUtils';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification'>('stats');
@@ -1892,6 +1893,13 @@ export default function AdminPanel() {
         status: 'Approved',
         kycStatus: order.kycDocuments ? 'Approved' : 'N/A'
       });
+
+      // Process affiliate commission automatically if referred
+      try {
+        await processAffiliateCommission(order, db);
+      } catch (commErr) {
+        console.warn("Could not process affiliate commission:", commErr);
+      }
 
       // Create Dashboard notification for the trader
       const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);

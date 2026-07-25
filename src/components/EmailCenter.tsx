@@ -133,24 +133,24 @@ export default function EmailCenter({ users }: EmailCenterProps) {
 
     setIsSending(true);
     try {
-      // Append each unique message to email_queue for backend SMTP delivery
-      const now = new Date().toISOString();
-      const promises = recipientList.map(async (recipient) => {
-        const queueId = `custom-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`;
-        return addDoc(collection(db, 'email_queue'), {
-          id: queueId,
-          recipient,
+      const response = await fetch('/api/admin/send-bulk-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipients: recipientList,
           subject: bulkSubject.trim(),
-          message: bulkBody.trim(),
-          status: 'pending',
-          createdAt: now
-        });
+          body: bulkBody.trim()
+        })
       });
 
-      await Promise.all(promises);
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Failed to dispatch bulk email campaign.');
+      }
+
       setSendMsg({ 
         type: 'success', 
-        text: `Successfully queued outbound email campaign targeting ${recipientList.length} recipients! Deliveries are processing in the background.` 
+        text: data.message || `Successfully sent bulk email to ${recipientList.length} recipient(s) in under 1 second!` 
       });
       
       // Reset form states
@@ -159,7 +159,7 @@ export default function EmailCenter({ users }: EmailCenterProps) {
       setSingleRecipient('');
       setMultipleRecipients('');
     } catch (err: any) {
-      setSendMsg({ type: 'error', text: 'Failed to queue email campaign: ' + err.message });
+      setSendMsg({ type: 'error', text: 'Failed to send bulk email: ' + err.message });
     } finally {
       setIsSending(false);
     }

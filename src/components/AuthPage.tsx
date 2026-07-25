@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
-  TrendingUp, Mail, Lock, User, AlertCircle, CheckCircle, ArrowLeft, Phone, MapPin, Globe, Building, Eye, EyeOff
+  TrendingUp, Mail, Lock, User, AlertCircle, CheckCircle, ArrowLeft, Phone, MapPin, Globe, Building, Eye, EyeOff, ShieldCheck, KeyRound
 } from 'lucide-react';
 import { auth, db } from '../firebase';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  confirmPasswordReset
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, collection, query, where, getDocs, addDoc, increment } from 'firebase/firestore';
 import { UserProfile } from '../types';
@@ -25,7 +26,7 @@ const COMMON_COUNTRIES = [
 ];
 
 export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }: AuthPageProps) {
-  const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'resetPassword'>(initialMode);
   
   // Login fields
   const [email, setEmail] = useState('');
@@ -45,16 +46,55 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
     return localStorage.getItem('referredBy') || '';
   });
 
-  // Forgot password OTP flow state
-  const [forgotStep, setForgotStep] = useState<1 | 2 | 3 | 4>(1); // 1: Enter Email, 2: Enter OTP, 3: New Password, 4: Success
-  const [otpCode, setOtpCode] = useState('');
+  // Forgot password & reset password state
+  const [forgotStep, setForgotStep] = useState<1 | 2>(1); // 1: Enter Email, 2: Reset Link Sent
+  const [resetToken, setResetToken] = useState('');
+  const [resetOobCode, setResetOobCode] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  // Check URL query parameters on mount to automatically open Reset Password screen when link is clicked
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const modeParam = urlParams.get('mode');
+    const tokenParam = urlParams.get('token');
+    const oobCodeParam = urlParams.get('oobCode');
+    const emailParam = urlParams.get('email');
+
+    if (modeParam === 'resetPassword' || tokenParam || oobCodeParam) {
+      setMode('resetPassword');
+      if (emailParam) {
+        setResetEmail(emailParam);
+        setEmail(emailParam);
+      }
+      if (tokenParam) {
+        setResetToken(tokenParam);
+        // Verify reset token with backend
+        fetch(`/api/auth/verify-reset-token?token=${encodeURIComponent(tokenParam)}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data.valid && data.email) {
+              setResetEmail(data.email);
+              setEmail(data.email);
+              if (data.oobCode) setResetOobCode(data.oobCode);
+            } else if (!data.valid) {
+              setErrorMsg(data.message || "This password reset link is invalid or has expired.");
+            }
+          })
+          .catch(err => console.warn("Token verify error:", err));
+      }
+      if (oobCodeParam) {
+        setResetOobCode(oobCodeParam);
+      }
+    }
+  }, []);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -291,94 +331,92 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
       }
 
     } else if (mode === 'forgot') {
-      if (forgotStep === 1) {
-        if (!email.trim()) {
-          setErrorMsg("Please enter your registered email address.");
-          setIsLoading(false);
-          return;
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail) {
+        setErrorMsg("Please enter your registered email address.");
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        // 1. Call server API to queue HTML Email containing Reset Password button and direct link
+        const res = await fetch('/api/auth/send-password-reset-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: cleanEmail,
+            appUrl: window.location.origin
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || "Failed to send password reset email.");
         }
 
+        // 2. Also trigger client Firebase Auth sendPasswordResetEmail as backup
         try {
-          const res = await fetch("/api/auth/send-otp", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: email.trim() })
-          });
-          const data = await res.json();
-          if (!data.success) {
-            throw new Error(data.message || "Failed to send OTP.");
+          await sendPasswordResetEmail(auth, cleanEmail);
+        } catch (fbErr) {
+          console.warn("Client Firebase Auth sendPasswordResetEmail notice:", fbErr);
+        }
+
+        setSuccessMsg("Password reset link sent to your email address.");
+        setForgotStep(2);
+      } catch (error: any) {
+        console.error("Error sending password reset email:", error);
+        setErrorMsg(error?.message || "Failed to send password reset email. Please try again.");
+      } finally {
+        setIsLoading(false);
+      }
+
+    } else if (mode === 'resetPassword') {
+      if (!newPassword || newPassword.length < 6) {
+        setErrorMsg("Password must be at least 6 characters long.");
+        setIsLoading(false);
+        return;
+      }
+
+      if (newPassword !== confirmNewPassword) {
+        setErrorMsg("Passwords do not match. Please check and re-enter.");
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        // 1. Send password update request to server endpoint
+        const res = await fetch('/api/auth/complete-password-reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: resetToken,
+            oobCode: resetOobCode,
+            newPassword: newPassword
+          })
+        });
+
+        const data = await res.json();
+
+        // 2. Also attempt Firebase Auth confirmPasswordReset if oobCode is available
+        if (resetOobCode) {
+          try {
+            await confirmPasswordReset(auth, resetOobCode, newPassword);
+          } catch (fbResetErr) {
+            console.warn("Client Firebase confirmPasswordReset notice:", fbResetErr);
           }
-          setSuccessMsg("OTP code sent to " + email.trim() + "! Please enter the 6-digit code.");
-          setForgotStep(2);
-        } catch (error: any) {
-          setErrorMsg(error?.message || "Could not send OTP.");
-        } finally {
-          setIsLoading(false);
         }
 
-      } else if (forgotStep === 2) {
-        if (!otpCode.trim()) {
-          setErrorMsg("Please enter the 6-digit OTP code.");
-          setIsLoading(false);
-          return;
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || "Failed to update password.");
         }
 
-        try {
-          const res = await fetch("/api/auth/verify-otp", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: email.trim(), otp: otpCode.trim() })
-          });
-          const data = await res.json();
-          if (!data.success) {
-            throw new Error(data.message || "Invalid OTP code.");
-          }
-          setSuccessMsg("OTP Verified! Now enter your new password below.");
-          setForgotStep(3);
-        } catch (error: any) {
-          setErrorMsg(error?.message || "OTP verification failed.");
-        } finally {
-          setIsLoading(false);
-        }
-
-      } else if (forgotStep === 3) {
-        if (!newPassword) {
-          setErrorMsg("Please enter a new password.");
-          setIsLoading(false);
-          return;
-        }
-        if (newPassword.length < 6) {
-          setErrorMsg("Password must be at least 6 characters long.");
-          setIsLoading(false);
-          return;
-        }
-        if (newPassword !== confirmNewPassword) {
-          setErrorMsg("New password and confirm password do not match.");
-          setIsLoading(false);
-          return;
-        }
-
-        try {
-          const res = await fetch("/api/auth/reset-password", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ 
-              email: email.trim(), 
-              otp: otpCode.trim(), 
-              newPassword: newPassword 
-            })
-          });
-          const data = await res.json();
-          if (!data.success) {
-            throw new Error(data.message || "Could not reset password.");
-          }
-          setSuccessMsg("Password Updated Successfully!");
-          setForgotStep(4);
-        } catch (error: any) {
-          setErrorMsg(error?.message || "Password update failed.");
-        } finally {
-          setIsLoading(false);
-        }
+        setResetSuccess(true);
+        setSuccessMsg("Password updated successfully! You can now log in with your new password.");
+      } catch (error: any) {
+        console.error("Error completing password reset:", error);
+        setErrorMsg(error?.message || "Failed to reset password. Link may be invalid or expired.");
+      } finally {
+        setIsLoading(false);
       }
     }
   };
@@ -410,14 +448,22 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
               <TrendingUp className="w-7 h-7 text-white" />
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-              {mode === 'login' ? 'Access Trade Desk' : mode === 'signup' ? 'Create Trader Account' : 'Reset Password'}
+              {mode === 'login' 
+                ? 'Access Trade Desk' 
+                : mode === 'signup' 
+                  ? 'Create Trader Account' 
+                  : mode === 'resetPassword'
+                    ? 'Set New Password'
+                    : 'Forgot Password'}
             </h2>
             <p className="text-xs text-slate-400 max-w-sm mx-auto">
               {mode === 'login' 
                 ? 'Welcome back to ATFunding evaluation engine portal.' 
                 : mode === 'signup' 
                   ? 'Complete your trader profile to access simulated evaluation accounts.' 
-                  : 'Enter your email address to receive a password recovery link.'}
+                  : mode === 'resetPassword'
+                    ? 'Enter and confirm your new password below.'
+                    : 'Enter your registered email address to receive a secure password reset link.'}
             </p>
           </div>
 
@@ -626,7 +672,7 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                     </div>
                   </div>
 
-                  {/* Referral Code (Optional / Auto-filled) */}
+                  {/* Referral Code */}
                   <div className="space-y-1 md:col-span-2">
                     <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block flex items-center justify-between">
                       <span>Referral / Affiliate Code (Optional)</span>
@@ -642,128 +688,56 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                         className="w-full h-11 bg-amber-500/10 border border-amber-500/30 rounded-xl pl-10 pr-4 text-xs font-mono text-amber-300 placeholder-amber-500/50 focus:outline-none focus:border-amber-400 transition-colors font-bold"
                       />
                     </div>
-                    {referralCode && (
-                      <p className="text-[10px] text-emerald-400/90 font-medium pt-0.5">
-                        🎁 Partner code applied! Your account will be attributed to this referrer.
-                      </p>
-                    )}
                   </div>
 
                 </div>
               </div>
-            ) : mode === 'forgot' ? (
-              /* Forgot Password Multi-Step Form */
-              <div className="space-y-5">
-                {/* Step indicator bar */}
-                <div className="flex items-center justify-between text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 pb-2 border-b border-white/10">
-                  <span className={forgotStep === 1 ? 'text-blue-400 font-extrabold' : 'text-slate-500'}>1. Email</span>
-                  <span className="text-slate-700">→</span>
-                  <span className={forgotStep === 2 ? 'text-blue-400 font-extrabold' : 'text-slate-500'}>2. Verify OTP</span>
-                  <span className="text-slate-700">→</span>
-                  <span className={forgotStep === 3 ? 'text-blue-400 font-extrabold' : 'text-slate-500'}>3. New Password</span>
-                  <span className="text-slate-700">→</span>
-                  <span className={forgotStep === 4 ? 'text-emerald-400 font-extrabold' : 'text-slate-500'}>4. Done</span>
-                </div>
-
-                {forgotStep === 1 && (
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Step 1: Registered Email Address *</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                      <input
-                        type="email"
-                        required
-                        placeholder="trader@atfunding.io"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="w-full h-11 bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
-                      />
+            ) : mode === 'resetPassword' ? (
+              /* Set New Password Form */
+              <div className="space-y-4">
+                {resetSuccess ? (
+                  <div className="text-center py-6 space-y-4">
+                    <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto text-emerald-400 shadow-lg shadow-emerald-500/20">
+                      <CheckCircle className="w-10 h-10" />
                     </div>
+                    <div className="space-y-2">
+                      <h3 className="text-xl font-extrabold text-white">Password Updated!</h3>
+                      <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
+                        Your password has been updated in Firebase Authentication. You can now log in with your new password.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorMsg('');
+                        setSuccessMsg('');
+                        setMode('login');
+                        window.history.replaceState({}, document.title, window.location.pathname);
+                      }}
+                      className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-lg shadow-blue-600/20 mt-4"
+                    >
+                      Sign In Now
+                    </button>
                   </div>
-                )}
-
-                {forgotStep === 2 && (
-                  <div className="space-y-3">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Target Email</label>
-                      <input
-                        type="text"
-                        disabled
-                        value={email}
-                        className="w-full h-10 bg-white/5 border border-white/10 rounded-xl px-4 text-xs text-slate-400 font-mono"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between items-center">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Step 2: Enter 6-Digit OTP *</label>
-                        <span className="text-[10px] font-mono text-amber-400">Valid for 10 mins</span>
-                      </div>
-                      <div className="relative">
-                        <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                        <input
-                          type="text"
-                          required
-                          maxLength={6}
-                          placeholder="123456"
-                          value={otpCode}
-                          onChange={(e) => setOtpCode(e.target.value)}
-                          className="w-full h-12 bg-white/5 border border-blue-500/40 rounded-xl pl-10 pr-4 text-lg font-mono tracking-widest text-white placeholder-slate-600 focus:outline-none focus:border-blue-400 text-center"
-                        />
+                ) : (
+                  <div className="space-y-4">
+                    <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3 flex items-center space-x-3">
+                      <ShieldCheck className="w-5 h-5 text-blue-400 flex-shrink-0" />
+                      <div className="text-xs">
+                        <p className="text-slate-300">Resetting password for:</p>
+                        <p className="font-mono font-bold text-blue-300">{resetEmail || email || 'Registered Account'}</p>
                       </div>
                     </div>
 
-                    <div className="flex justify-between items-center text-[10px] pt-1">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          setErrorMsg('');
-                          setSuccessMsg('');
-                          setIsLoading(true);
-                          try {
-                            const res = await fetch("/api/auth/send-otp", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ email: email.trim() })
-                            });
-                            const data = await res.json();
-                            if (!data.success) throw new Error(data.message);
-                            setSuccessMsg("New OTP sent to " + email.trim() + "!");
-                          } catch (err: any) {
-                            setErrorMsg(err.message || "Failed to resend OTP.");
-                          } finally {
-                            setIsLoading(false);
-                          }
-                        }}
-                        className="text-blue-400 hover:underline font-bold"
-                      >
-                        Resend OTP Code
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setErrorMsg('');
-                          setSuccessMsg('');
-                          setForgotStep(1);
-                        }}
-                        className="text-slate-400 hover:text-white"
-                      >
-                        Change Email
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {forgotStep === 3 && (
-                  <div className="space-y-3">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Step 3: New Password *</label>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">New Password *</label>
                       <div className="relative">
                         <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                         <input
                           type={showPassword ? 'text' : 'password'}
                           required
-                          placeholder="At least 6 characters"
+                          minLength={6}
+                          placeholder="••••••••"
                           value={newPassword}
                           onChange={(e) => setNewPassword(e.target.value)}
                           className="w-full h-11 bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
@@ -785,26 +759,94 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                         <input
                           type={showPassword ? 'text' : 'password'}
                           required
-                          placeholder="Repeat new password"
+                          minLength={6}
+                          placeholder="••••••••"
                           value={confirmNewPassword}
                           onChange={(e) => setConfirmNewPassword(e.target.value)}
-                          className="w-full h-11 bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+                          className="w-full h-11 bg-white/5 border border-white/10 rounded-xl pl-10 pr-10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
                         />
                       </div>
                     </div>
                   </div>
                 )}
-
-                {forgotStep === 4 && (
-                  <div className="text-center py-6 space-y-4">
+              </div>
+            ) : mode === 'forgot' ? (
+              /* Forgot Password Form */
+              <div className="space-y-4">
+                {forgotStep === 1 ? (
+                  <div className="space-y-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Registered Email Address *</label>
+                      <div className="relative">
+                        <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                        <input
+                          type="email"
+                          required
+                          placeholder="trader@atfunding.io"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          className="w-full h-11 bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-4 space-y-4">
                     <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center mx-auto text-emerald-400 shadow-lg shadow-emerald-500/20">
                       <CheckCircle className="w-10 h-10" />
                     </div>
-                    <div className="space-y-1">
-                      <h3 className="text-xl font-extrabold text-white">Password Updated Successfully!</h3>
-                      <p className="text-xs text-slate-400">
-                        Your account password has been updated. You can now log in to the ATFunding Trade Desk using your new password.
+                    <div className="space-y-1.5">
+                      <h3 className="text-lg font-extrabold text-white">Reset Link Sent</h3>
+                      <p className="text-xs text-slate-300 leading-relaxed">
+                        A secure email containing a <strong className="text-blue-400">Reset Password</strong> button has been sent to <span className="font-bold text-amber-300">{email}</span>.
                       </p>
+                      <p className="text-[11px] text-slate-400">
+                        Please check your inbox and click the button to set your new password.
+                      </p>
+                    </div>
+
+                    <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                      <button
+                        type="button"
+                        disabled={isLoading}
+                        onClick={async () => {
+                          setErrorMsg('');
+                          setSuccessMsg('');
+                          setIsLoading(true);
+                          try {
+                            const res = await fetch('/api/auth/send-password-reset-link', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ email: email.trim().toLowerCase(), appUrl: window.location.origin })
+                            });
+                            const data = await res.json();
+                            if (data.success) {
+                              setSuccessMsg("Password reset link resent to your email.");
+                            } else {
+                              setErrorMsg(data.message || "Could not resend email.");
+                            }
+                          } catch (resendErr: any) {
+                            setErrorMsg(resendErr?.message || "Could not resend email.");
+                          } finally {
+                            setIsLoading(false);
+                          }
+                        }}
+                        className="flex-1 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        {isLoading ? 'Resending...' : 'Resend Reset Link'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setErrorMsg('');
+                          setSuccessMsg('');
+                          setForgotStep(1);
+                          setMode('login');
+                        }}
+                        className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
+                      >
+                        Back to Sign In
+                      </button>
                     </div>
                   </div>
                 )}
@@ -836,9 +878,6 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                         setErrorMsg('');
                         setSuccessMsg('');
                         setForgotStep(1);
-                        setOtpCode('');
-                        setNewPassword('');
-                        setConfirmNewPassword('');
                         setMode('forgot');
                       }}
                       className="text-[10px] font-bold text-blue-400 hover:underline cursor-pointer"
@@ -868,24 +907,11 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
               </div>
             )}
 
-            {mode === 'forgot' && forgotStep === 4 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setErrorMsg('');
-                  setSuccessMsg('');
-                  setForgotStep(1);
-                  setMode('login');
-                }}
-                className="w-full h-12 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-emerald-600/20 cursor-pointer mt-2"
-              >
-                Sign In Now
-              </button>
-            ) : (
+            {(mode === 'forgot' && forgotStep === 2) || (mode === 'resetPassword' && resetSuccess) ? null : (
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full h-12 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20 cursor-pointer mt-2"
+                className="w-full h-12 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20 cursor-pointer mt-2 flex items-center justify-center space-x-2"
               >
                 {isLoading 
                   ? 'Processing Request...' 
@@ -893,11 +919,9 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                     ? 'Sign In to Portal' 
                     : mode === 'signup' 
                       ? 'Register Trader Account' 
-                      : forgotStep === 1 
-                        ? 'Send OTP' 
-                        : forgotStep === 2 
-                          ? 'Verify OTP Code' 
-                          : 'Update Password'}
+                      : mode === 'resetPassword'
+                        ? 'Update Account Password'
+                        : 'Send Password Reset Link'}
               </button>
             )}
           </form>
