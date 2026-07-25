@@ -8,7 +8,7 @@ import {
   createUserWithEmailAndPassword, 
   sendPasswordResetEmail
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, query, where, getDocs, addDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, query, where, getDocs, addDoc, increment } from 'firebase/firestore';
 import { UserProfile } from '../types';
 
 interface AuthPageProps {
@@ -41,6 +41,9 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
   const [state, setState] = useState('');
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
+  const [referralCode, setReferralCode] = useState<string>(() => {
+    return localStorage.getItem('referredBy') || '';
+  });
 
   // Forgot password OTP flow state
   const [forgotStep, setForgotStep] = useState<1 | 2 | 3 | 4>(1); // 1: Enter Email, 2: Enter OTP, 3: New Password, 4: Success
@@ -169,7 +172,7 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
         // 5. Write Profile to Firestore
         const userDocRef = doc(db, 'users', creds.user.uid);
         const fullName = `${firstName.trim()} ${lastName.trim()}`;
-        const savedRef = localStorage.getItem('referredBy');
+        const savedRef = (referralCode.trim() || localStorage.getItem('referredBy') || '').trim();
 
         const profile: UserProfile = {
           uid: creds.user.uid,
@@ -195,6 +198,22 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
         if (savedRef) {
           profile.referredBy = savedRef;
           localStorage.removeItem('referredBy');
+
+          // Increment signed up users count for referrer in Firestore
+          try {
+            setDoc(doc(db, 'referral_stats', savedRef), {
+              code: savedRef,
+              signups: increment(1),
+              lastSignupAt: new Date().toISOString()
+            }, { merge: true }).catch(err => console.warn("Failed to increment referral_stats signups:", err));
+
+            setDoc(doc(db, 'affiliates', savedRef), {
+              code: savedRef,
+              referrals: increment(1)
+            }, { merge: true }).catch(err => console.warn("Failed to increment affiliates referrals:", err));
+          } catch (refErr) {
+            console.warn("Could not record referral signup metric:", refErr);
+          }
         }
 
         await setDoc(userDocRef, profile);
@@ -605,6 +624,29 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                         className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 pt-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none"
                       />
                     </div>
+                  </div>
+
+                  {/* Referral Code (Optional / Auto-filled) */}
+                  <div className="space-y-1 md:col-span-2">
+                    <label className="text-[10px] font-bold text-amber-400 uppercase tracking-wider block flex items-center justify-between">
+                      <span>Referral / Affiliate Code (Optional)</span>
+                      {referralCode && <span className="text-[9px] text-emerald-400 font-mono">✓ Partner Code Active</span>}
+                    </label>
+                    <div className="relative">
+                      <Globe className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-amber-400" />
+                      <input
+                        type="text"
+                        placeholder="e.g. trader123 or Partner UID"
+                        value={referralCode}
+                        onChange={(e) => setReferralCode(e.target.value)}
+                        className="w-full h-11 bg-amber-500/10 border border-amber-500/30 rounded-xl pl-10 pr-4 text-xs font-mono text-amber-300 placeholder-amber-500/50 focus:outline-none focus:border-amber-400 transition-colors font-bold"
+                      />
+                    </div>
+                    {referralCode && (
+                      <p className="text-[10px] text-emerald-400/90 font-medium pt-0.5">
+                        🎁 Partner code applied! Your account will be attributed to this referrer.
+                      </p>
+                    )}
                   </div>
 
                 </div>

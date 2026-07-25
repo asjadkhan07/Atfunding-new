@@ -3,7 +3,7 @@ import {
   TrendingUp, Layers, Gift, DollarSign, Award, Ticket, 
   User, Settings, LogOut, Check, AlertCircle, Users, 
   Share2, FileText, ExternalLink, RefreshCw, ChevronDown, Key,
-  ShieldCheck, Upload, Loader2, Coins, ShoppingBag, ListTodo
+  ShieldCheck, Upload, Loader2, Coins, ShoppingBag, ListTodo, Copy, Zap
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { TradingAccount, UserProfile, PayoutRequest, Affiliate, Certificate, ReferralWithdrawal } from '../types';
@@ -435,64 +435,92 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   // Affiliate states
   const [affiliateCodeInput, setAffiliateCodeInput] = useState('');
   const [affiliateMsg, setAffiliateMsg] = useState('');
+  const [totalTaps, setTotalTaps] = useState(0);
   const [totalReferrals, setTotalReferrals] = useState(0);
   const [totalSales, setTotalSales] = useState(0);
   const [totalEarnings, setTotalEarnings] = useState(0);
+  const [referredUsersList, setReferredUsersList] = useState<any[]>([]);
   const [copyLinkFeedback, setCopyLinkFeedback] = useState(false);
 
-  // Real-time Firestore tracking for referrals & approved referred orders
+  // Real-time Firestore tracking for taps, referred users list & approved referred orders
   useEffect(() => {
     if (!user?.uid) return;
 
-    // 1. Listen to users who were referred by this user
-    const referredUsersQuery = query(collection(db, 'users'), where('referredBy', '==', user.uid));
+    const myCodes = [user.uid, user.affiliateCode].filter(Boolean);
+
+    // 1. Listen to link clicks / taps
+    const unsubStatsList: (() => void)[] = [];
+    let combinedClicks = 0;
     
-    const unsubscribeUsers = onSnapshot(referredUsersQuery, (usersSnapshot) => {
-      const referredUserIds: string[] = [];
-      usersSnapshot.forEach((doc) => {
-        referredUserIds.push(doc.id);
-      });
-      
-      setTotalReferrals(referredUserIds.length);
+    myCodes.forEach((codeKey) => {
+      const unsub = onSnapshot(doc(db, 'referral_stats', codeKey), (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          combinedClicks += data.clicks || 0;
+          setTotalTaps(combinedClicks);
+        }
+      }, err => console.warn("Error listening to referral_stats:", err));
+      unsubStatsList.push(unsub);
 
-      if (referredUserIds.length === 0) {
-        setTotalSales(0);
-        setTotalEarnings(0);
-        return;
-      }
+      const unsubAff = onSnapshot(doc(db, 'affiliates', codeKey), (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data();
+          if (data.clicks && data.clicks > combinedClicks) {
+            combinedClicks = data.clicks;
+            setTotalTaps(combinedClicks);
+          }
+        }
+      }, err => console.warn("Error listening to affiliates:", err));
+      unsubStatsList.push(unsub);
+    });
 
-      // 2. Listen to approved orders referred by this user to calculate total sales and 15% commissions in real-time securely
+    // 2. Listen to users who were referred by this user (check referredBy == user.uid and referredBy == user.affiliateCode)
+    const unsubUsersList: (() => void)[] = [];
+    const userMap = new Map<string, any>();
+
+    myCodes.forEach((codeKey) => {
+      const q = query(collection(db, 'users'), where('referredBy', '==', codeKey));
+      const unsub = onSnapshot(q, (snapshot) => {
+        snapshot.forEach((docSnap) => {
+          userMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
+        });
+        const list = Array.from(userMap.values());
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setReferredUsersList(list);
+        setTotalReferrals(list.length);
+      }, err => console.warn("Error listening to referred users:", err));
+      unsubUsersList.push(unsub);
+    });
+
+    // 3. Listen to approved orders referred by this user
+    const unsubOrdersList: (() => void)[] = [];
+    const orderMap = new Map<string, number>();
+
+    myCodes.forEach((codeKey) => {
       const ordersQuery = query(
         collection(db, 'orders'),
-        where('referredBy', '==', user.uid),
+        where('referredBy', '==', codeKey),
         where('status', '==', 'Approved')
       );
-      const unsubscribeOrders = onSnapshot(ordersQuery, (ordersSnapshot) => {
-        let salesSum = 0;
-        ordersSnapshot.forEach((doc) => {
-          const orderData = doc.data();
-          if (referredUserIds.includes(orderData.userId) || orderData.referredBy === user.uid) {
-            salesSum += orderData.price || 0;
-          }
+      const unsub = onSnapshot(ordersQuery, (ordersSnapshot) => {
+        ordersSnapshot.forEach((docSnap) => {
+          const orderData = docSnap.data();
+          orderMap.set(docSnap.id, orderData.price || 0);
         });
-        setTotalSales(salesSum);
-        // 15% of total sales is the affiliate commission/earnings
-        setTotalEarnings(salesSum * 0.15);
-      }, (err) => {
-        console.error("Error listening to referred orders:", err);
-      });
-
-      return () => {
-        unsubscribeOrders();
-      };
-    }, (err) => {
-      console.error("Error listening to referred users:", err);
+        let sum = 0;
+        orderMap.forEach((price) => sum += price);
+        setTotalSales(sum);
+        setTotalEarnings(sum * 0.15);
+      }, err => console.warn("Error listening to referred orders:", err));
+      unsubOrdersList.push(unsub);
     });
 
     return () => {
-      unsubscribeUsers();
+      unsubStatsList.forEach(u => u());
+      unsubUsersList.forEach(u => u());
+      unsubOrdersList.forEach(u => u());
     };
-  }, [user?.uid]);
+  }, [user?.uid, user?.affiliateCode]);
 
   // Referral Withdrawals State & Subscription
   const [myRefWithdrawals, setMyRefWithdrawals] = useState<ReferralWithdrawal[]>([]);
@@ -1443,34 +1471,45 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
 
         {/* AFFILIATE DASHBOARD TAB */}
         {activeTab === 'affiliate' && (
-          <div className="space-y-8 max-w-4xl mx-auto">
+          <div className="space-y-8 max-w-5xl mx-auto">
             <div>
               <h2 className="text-2xl font-bold tracking-tight text-white">Affiliate Partner Dashboard</h2>
-              <p className="text-xs text-slate-400">Share your custom affiliate link and earn up to 15% commission on every challenge program purchase.</p>
+              <p className="text-xs text-slate-400">Share your custom affiliate link, track link taps, monitor referred traders, and earn 15% commission on all evaluation challenge purchases.</p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-blue-500/30 transition-all">
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Referrals</p>
-                <p className="text-3xl font-bold text-white mt-1.5 font-mono">{totalReferrals}</p>
+            {/* 4 Performance Metric Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-amber-500/30 transition-all">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Link Taps / Clicks</p>
+                  <span className="p-1.5 bg-amber-500/10 rounded-xl text-amber-400 text-xs font-mono font-bold">LIVE</span>
+                </div>
+                <p className="text-3xl font-extrabold text-amber-300 mt-2 font-mono">{totalTaps}</p>
+                <p className="text-[10px] text-slate-500 mt-1">Total referral link opens</p>
               </div>
+
               <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-blue-500/30 transition-all">
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Sales</p>
-                <p className="text-3xl font-bold text-blue-400 mt-1.5 font-mono">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Signed Up Users</p>
+                  <span className="p-1.5 bg-blue-500/10 rounded-xl text-blue-400 text-xs font-mono font-bold">100% Tracked</span>
+                </div>
+                <p className="text-3xl font-extrabold text-white mt-2 font-mono">{totalReferrals}</p>
+                <p className="text-[10px] text-slate-500 mt-1">Traders registered with your link</p>
+              </div>
+
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-cyan-500/30 transition-all">
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Referral Sales</p>
+                <p className="text-3xl font-extrabold text-cyan-400 mt-2 font-mono">
                   ${totalSales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
+                <p className="text-[10px] text-slate-500 mt-1">Processed challenge volumes</p>
               </div>
-              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-blue-500/30 transition-all">
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Earnings</p>
-                <p className="text-3xl font-bold text-emerald-400 mt-1.5 font-mono">
-                  ${totalEarnings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-blue-500/30 transition-all flex flex-col justify-between">
+
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl hover:border-emerald-500/30 transition-all flex flex-col justify-between">
                 <div>
-                  <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Unpaid Balance</p>
-                  <p className="text-3xl font-bold text-amber-400 mt-1.5 font-mono">
-                    ${affiliate?.unpaidBalance.toFixed(2) || '0.00'}
+                  <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Your Earnings (15%)</p>
+                  <p className="text-3xl font-extrabold text-emerald-400 mt-2 font-mono">
+                    ${totalEarnings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </p>
                 </div>
                 <button
@@ -1479,7 +1518,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                     setRefWithdrawMsg('');
                     setRefWithdrawModalOpen(true);
                   }}
-                  className="mt-3 w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-500/10 flex items-center justify-center gap-1.5"
+                  className="mt-3 w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-500/10 flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <DollarSign className="w-3.5 h-3.5" />
                   <span>Withdraw Earnings</span>
@@ -1574,12 +1613,154 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
               </div>
             )}
 
+            {/* REFERRAL LINK GENERATOR SECTION */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: Official Referral Link */}
+              <div className="lg:col-span-8 bg-white/5 border border-white/10 rounded-3xl p-6 space-y-5 backdrop-blur-sm shadow-xl">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Share2 className="w-4 h-4 text-blue-400" />
+                    <span>Your Official Referral Partner Link</span>
+                  </h3>
+                  <span className="px-2.5 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-mono font-bold rounded-lg uppercase">Direct Registration Enabled</span>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    When someone opens your referral link, they are automatically directed straight to the registration page with your referral code prefilled.
+                  </p>
+                  
+                  <div className="p-4 bg-black/50 rounded-2xl border border-white/10 text-xs text-blue-300 font-mono flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 break-all">
+                    <span className="text-amber-300 font-bold text-xs select-all">
+                      {`${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const link = `${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`;
+                          navigator.clipboard.writeText(link);
+                          setCopyLinkFeedback(true);
+                          setTimeout(() => setCopyLinkFeedback(false), 2000);
+                        }}
+                        className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-all text-xs flex items-center gap-1.5 cursor-pointer shadow-lg shadow-blue-500/20"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>{copyLinkFeedback ? 'Copied!' : 'Copy Link'}</span>
+                      </button>
+
+                      {navigator.share && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const link = `${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`;
+                            navigator.share({
+                              title: 'ATFunding Referral Code',
+                              text: 'Join ATFunding simulated prop trading challenge!',
+                              url: link,
+                            }).catch(() => {});
+                          }}
+                          className="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl transition-all text-xs cursor-pointer"
+                        >
+                          Share
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[11px] text-slate-400 pt-1">
+                    <span className="text-slate-300 font-semibold">Your Affiliate Code:</span>
+                    <code className="px-2.5 py-0.5 bg-white/10 rounded font-mono font-bold text-amber-300 text-xs">{user.affiliateCode || user.uid}</code>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Partner Benefits */}
+              <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-3xl p-5 space-y-4 backdrop-blur-sm shadow-xl flex flex-col justify-between">
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">Partner terms</h3>
+                <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
+                  <p className="flex items-start gap-2">
+                    <span className="text-emerald-400 font-bold">✓</span>
+                    <span><strong>15% Commission:</strong> Earn 15% payout share from any evaluation challenge fee processed using your referral link.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <span className="text-emerald-400 font-bold">✓</span>
+                    <span><strong>Direct Registration:</strong> Link opens the sign-up form directly and saves referral cookies instantly.</span>
+                  </p>
+                  <p className="flex items-start gap-2">
+                    <span className="text-emerald-400 font-bold">✓</span>
+                    <span><strong>Fast Withdrawals:</strong> Request payout to USDT TRC20 or Bank account once reaching $20 balance.</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* REFERRED TRADERS TABLE ("Kitne bando ne signup kiya") */}
+            <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Users className="w-4 h-4 text-blue-400" />
+                    <span>Signed Up Traders ({referredUsersList.length})</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">List of traders who signed up using your referral link or partner code.</p>
+                </div>
+                <span className="px-3 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs font-mono font-bold rounded-xl">
+                  {referredUsersList.length} Registered
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead>
+                    <tr className="border-b border-white/10 font-mono text-[10px] uppercase text-slate-400">
+                      <th className="py-3 px-4">#</th>
+                      <th className="py-3 px-4">Trader Name</th>
+                      <th className="py-3 px-4">Username</th>
+                      <th className="py-3 px-4">Joined Date</th>
+                      <th className="py-3 px-4 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 font-medium">
+                    {referredUsersList.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-500 text-xs">
+                          No traders have signed up using your referral link yet.<br />
+                          <span className="text-slate-400 font-semibold">Share your referral link above to start onboarding traders and earning commissions!</span>
+                        </td>
+                      </tr>
+                    ) : (
+                      referredUsersList.map((refUser, idx) => (
+                        <tr key={refUser.id || idx} className="hover:bg-white/5 transition-colors">
+                          <td className="py-3 px-4 font-mono text-slate-500 text-[11px]">{idx + 1}</td>
+                          <td className="py-3 px-4 font-bold text-white">
+                            {refUser.displayName || refUser.name || 'Trader'}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-blue-300">
+                            @{refUser.username || refUser.email?.split('@')[0] || 'user'}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-400 text-[11px]">
+                            {refUser.createdAt ? new Date(refUser.createdAt).toLocaleDateString() : 'Recent'}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <span className="px-2.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase">
+                              Active
+                            </span>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* WITHDRAWALS HISTORY LIST */}
             {myRefWithdrawals.length > 0 && (
               <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-4">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-emerald-400" />
-                  <span>Your Referral Withdrawal Requests</span>
+                  <span>Your Referral Payout Requests</span>
                 </h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs text-slate-300">
@@ -1618,68 +1799,6 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                 </div>
               </div>
             )}
-
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* Left Column: Link copy controls */}
-              <div className="lg:col-span-7 bg-white/5 border border-white/10 rounded-3xl p-6 space-y-6 backdrop-blur-sm shadow-xl">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">Your Referral Partner Links</h3>
-
-                <div className="space-y-4">
-                  <div className="space-y-1.5">
-                    <p className="text-xs text-slate-400 font-bold">Production Referral Link:</p>
-                    <div className="p-3.5 bg-black/45 rounded-xl border border-white/10 text-xs text-blue-300 font-mono select-all flex justify-between items-center gap-2 break-all">
-                      <span>https://atfunding.com/register?ref={user.uid}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(`https://atfunding.com/register?ref=${user.uid}`);
-                          setCopyLinkFeedback(true);
-                          setTimeout(() => setCopyLinkFeedback(false), 2000);
-                        }}
-                        className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors shrink-0 text-[10px]"
-                      >
-                        {copyLinkFeedback ? 'Copied!' : 'Copy'}
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500">Official registration link used for marketing. Cookies automatically track sign-ups.</p>
-                  </div>
-
-                  <div className="space-y-1.5 pt-2 border-t border-white/5">
-                    <p className="text-xs text-slate-400 font-bold">Local Preview/Testing Link:</p>
-                    <div className="p-3.5 bg-black/45 rounded-xl border border-white/10 text-xs text-slate-300 font-mono select-all flex justify-between items-center gap-2 break-all">
-                      <span>{window.location.origin}/?ref={user.uid}</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(`${window.location.origin}/?ref=${user.uid}`);
-                          alert("Local test link copied to clipboard!");
-                        }}
-                        className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white font-bold rounded-lg transition-colors shrink-0 text-[10px]"
-                      >
-                        Copy
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500 font-medium text-amber-500/80">Use this link to verify flow locally. It auto-registers the cookie and attributes referred sign-ups perfectly.</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right Column: Terms list */}
-              <div className="lg:col-span-5 bg-white/5 border border-white/10 rounded-3xl p-5 space-y-4 backdrop-blur-sm shadow-xl">
-                <h3 className="text-sm font-bold text-white uppercase tracking-wider">Partner terms</h3>
-                <div className="space-y-3.5 text-xs text-slate-400 leading-relaxed">
-                  <p>
-                    <strong>15% Commission:</strong> Earn 15% payout share from any evaluation challenge fee processed using your affiliate custom code.
-                  </p>
-                  <p>
-                    <strong>Easy Withdrawals:</strong> Withdraw your partner earnings immediately upon reaching a minimal threshold of $50 USD.
-                  </p>
-                  <p>
-                    <strong>Instant Cookies:</strong> 30-day tracking cookie registers referrals even if they purchase weeks after clicking.
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 

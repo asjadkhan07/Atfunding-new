@@ -7,7 +7,7 @@ import AdminPanel from './components/AdminPanel';
 import { UserProfile } from './types';
 import { auth, db } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, increment } from 'firebase/firestore';
 
 export default function App() {
   const [screen, setScreen] = useState<'landing' | 'auth' | 'dashboard' | 'admin-portal' | 'admin-dashboard'>('landing');
@@ -114,7 +114,17 @@ export default function App() {
         if (window.location.hash === '#/admin-portal' || window.location.hash === '#admin-portal') {
           setScreen('admin-portal');
         } else {
-          setScreen('landing');
+          // Check if user opened a referral link or registration request
+          const params = new URLSearchParams(window.location.search);
+          const hasRef = params.get('ref') || params.get('referral') || params.get('code');
+          const isSignupAction = params.get('action') === 'signup' || params.get('mode') === 'signup' || window.location.hash.includes('register') || window.location.hash.includes('signup');
+
+          if (hasRef || isSignupAction) {
+            setAuthMode('signup');
+            setScreen('auth');
+          } else {
+            setScreen('landing');
+          }
         }
       }
       setIsInitializing(false);
@@ -123,13 +133,34 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Parse and save referral ID from URL on mount
+  // Parse and save referral ID from URL on mount & track referral taps
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const referralId = params.get('ref');
+    const referralId = params.get('ref') || params.get('referral') || params.get('code');
     if (referralId) {
-      localStorage.setItem('referredBy', referralId);
-      console.log('Saved referral ID to cookies/localStorage:', referralId);
+      const cleanRef = referralId.trim();
+      localStorage.setItem('referredBy', cleanRef);
+      console.log('Saved referral ID to localStorage:', cleanRef);
+
+      // Track link tap in Firestore if not already counted in this browser session
+      const sessionKey = `tapped_ref_${cleanRef}`;
+      if (!sessionStorage.getItem(sessionKey)) {
+        sessionStorage.setItem(sessionKey, 'true');
+        try {
+          setDoc(doc(db, 'referral_stats', cleanRef), {
+            code: cleanRef,
+            clicks: increment(1),
+            lastTappedAt: new Date().toISOString()
+          }, { merge: true }).catch(err => console.warn("Failed to update referral_stats tap:", err));
+
+          setDoc(doc(db, 'affiliates', cleanRef), {
+            code: cleanRef,
+            clicks: increment(1)
+          }, { merge: true }).catch(err => console.warn("Failed to update affiliates tap:", err));
+        } catch (e) {
+          console.warn("Could not log referral tap metric:", e);
+        }
+      }
     }
   }, []);
 
