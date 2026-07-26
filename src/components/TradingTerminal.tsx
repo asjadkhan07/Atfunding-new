@@ -264,21 +264,27 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   // Centralized reference to selected symbol price from global priceEngine
   const activeSelectedSymbol = priceEngine[selectedSymbol.symbol] || selectedSymbol;
 
-  // Track trades that have triggered the 2-minute warning
+  // Track trades and risk conditions that have triggered warnings
   const warned2MinTradesRef = useRef<Set<string>>(new Set());
+  const warnedRiskRef = useRef<Set<string>>(new Set());
+  const warned10MinTradesRef = useRef<Set<string>>(new Set());
 
-  // 3. Automated real-time evaluation risk checks & auto-liquidation
+  // 3. Automated real-time evaluation risk checks -> Send Warning ⚠️ to Admin Panel (NO AUTO-BREACH)
   useEffect(() => {
     if (!selectedAccount || selectedAccount.status !== 'active') return;
 
     const risk = evaluateAccountRisk(selectedAccount, metrics, closedTrades);
     if (risk.isDailyBreached || risk.isMaxBreached) {
-      console.warn("Challenge breached, executing liquidation:", risk.breachReason);
-      handleBreachAccount(risk.breachReason);
+      const warnKey = `${selectedAccount.id}-${risk.breachReason}`;
+      if (!warnedRiskRef.current.has(warnKey)) {
+        warnedRiskRef.current.add(warnKey);
+        console.warn("Drawdown limit reached, logging warning to Admin Panel:", risk.breachReason);
+        handleBreachAccount(risk.breachReason);
+      }
     }
   }, [metrics, selectedAccount?.id]);
 
-  // Automated real-time holding duration monitor (2-min warning popup, 10-min instant breach)
+  // Automated real-time holding duration monitor (2-min warning popup, 10-min duration warning to Admin Panel)
   useEffect(() => {
     if (!selectedAccount || selectedAccount.status !== 'active' || openTrades.length === 0) return;
 
@@ -290,9 +296,12 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
         const durationSec = Math.floor((now - openTime) / 1000);
 
         if (durationSec >= 600) {
-          // 10 minutes exceeded: Instantly breach account!
-          console.warn(`Position duration exceeded 10 mins (${durationSec}s) on trade #${trade.id}. Breaching account.`);
-          handleBreachAccount('10 Minute Rule Violation');
+          // 10 minutes exceeded: Send Warning ⚠️ to Admin Panel (NO AUTO-BREACH)
+          if (!warned10MinTradesRef.current.has(trade.id)) {
+            warned10MinTradesRef.current.add(trade.id);
+            console.warn(`Position duration exceeded 10 mins (${durationSec}s) on trade #${trade.id}. Logging warning to Admin Panel.`);
+            handleBreachAccount('10 Minute Rule Warning');
+          }
         } else if (durationSec >= 120) {
           // 2 minutes exceeded: Show warning popup!
           if (!warned2MinTradesRef.current.has(trade.id)) {
@@ -303,7 +312,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
               subtitle: 'Position Duration Warning',
               type: 'warning',
               message: 'Warning: Positions must not exceed 2 minutes.',
-              details: `Trade #${trade.id} on ${trade.symbol} (${trade.lots} lots) has been open for ${Math.floor(durationSec / 60)}m ${durationSec % 60}s. Holding a position for more than 10 minutes will result in an instant account breach.`
+              details: `Trade #${trade.id} on ${trade.symbol} (${trade.lots} lots) has been open for ${Math.floor(durationSec / 60)}m ${durationSec % 60}s. A warning ⚠️ notice has been sent to the Admin Panel.`
             });
           }
         }
@@ -606,73 +615,42 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
     }
   };
 
-  // Handle challenge breach (liquidation and status lock)
+  // Send warning notice ⚠️ to Admin Panel (Account remains active, no liquidation)
   const handleBreachAccount = async (reason: string) => {
-    if (!selectedAccount || selectedAccount.status === 'breached') return;
+    if (!selectedAccount) return;
     try {
-      const accountRef = doc(db, 'accounts', selectedAccount.id);
-      
-      // Close all open positions at current market quotes
-      const closePromises = openTrades.map((trade) => {
-        const symData = priceEngine[trade.symbol];
-        const exitPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
-        return executeDirectClose(trade, exitPrice, `Liquidation due to breach: ${reason}`);
-      });
-      await Promise.all(closePromises);
-
-      // Lock account status as breached
-      await updateDoc(accountRef, {
-        status: 'breached',
-        breachReason: reason,
-        equity: metrics.balance
-      });
-
-      // Insert record in 'breaches' audit log collection
-      const breachId = 'BRCH-' + Math.floor(100000 + Math.random() * 900000);
-      const uEmail = selectedAccount.userEmail || userProfile?.email || 'trader@atfunding.io';
-      await setDoc(doc(db, 'breaches', breachId), {
-        id: breachId,
-        accountId: selectedAccount.id,
-        userId: selectedAccount.userId || userId,
-        userEmail: uEmail,
-        breachReason: reason,
-        breachDate: new Date().toISOString(),
-        adminName: 'Automated Risk System'
-      });
-
-      // Insert record in 'ruleViolations' collection
       const violationId = 'VIO-' + Math.floor(100000 + Math.random() * 900000);
+      const uEmail = selectedAccount.userEmail || userProfile?.email || 'trader@atfunding.io';
       const uName = userProfile?.name || userProfile?.displayName || 'Elite Trader';
+
+      // Insert record in 'ruleViolations' collection for Admin Panel
       await setDoc(doc(db, 'ruleViolations', violationId), {
         id: violationId,
         accountId: selectedAccount.id,
+        accountNumber: selectedAccount.login || selectedAccount.id,
         userId: selectedAccount.userId || userId,
         userName: uName,
         userEmail: uEmail,
-        violationType: reason,
-        description: reason === '10 Minute Rule Violation'
-          ? 'Account Breached - Maximum holding time exceeded.'
-          : `Account Breached - ${reason}.`,
-        status: 'Breached',
+        violationType: reason.includes('⚠️') ? reason : `${reason} ⚠️`,
+        description: `Risk threshold alert detected: ${reason}. Warning ⚠️ logged in Admin Panel for review. Account remains ACTIVE.`,
+        status: 'Warning',
         timestamp: new Date().toISOString()
       });
 
-      // Show breach popup modal
+      // Show warning popup modal to trader (Account is NOT breached and NOT liquidated)
       setRuleBreachModal({
         isOpen: true,
-        title: 'Account Breached',
-        subtitle: reason === '10 Minute Rule Violation' ? 'Maximum holding time exceeded' : 'Drawdown Limit Exceeded',
+        title: '⚠️ Risk & Rule Warning Notice',
+        subtitle: reason,
         type: 'warning',
-        message: reason === '10 Minute Rule Violation'
-          ? 'Account Breached - Maximum holding time exceeded.'
-          : `Account Breached - ${reason}.`,
-        details: `Trading privileges on account #${selectedAccount.id || selectedAccount.login} have been permanently disabled.`
+        message: `Rule / Risk Alert: ${reason}.`,
+        details: `Your account remains ACTIVE. A warning notice ⚠️ has been logged in the Admin Panel for manual administrative review.`
       });
 
-      setErrorMsg(`ACCOUNT BREACHED: ${reason}. Trading disabled.`);
+      setErrorMsg(`WARNING ⚠️: ${reason}. Notice logged in Admin Panel.`);
       onRefreshAccount();
     } catch (e) {
-      console.error("Error breaching account:", e);
+      console.error("Error logging warning notice:", e);
     }
   };
 
@@ -787,36 +765,38 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       }
     }
     
-    // Daily Loss Limit Violation
+    // Daily Loss Limit Violation -> Send Warning ⚠️ to Admin Panel
     if (currentDailyLossPct >= dailyLossPctLimit) {
       const violationId = vId();
       await setDoc(doc(db, 'ruleViolations', violationId), {
         id: violationId,
         accountId: accData.id,
+        accountNumber: accData.login || accData.id,
         userId: accData.userId,
         userName: uName,
         userEmail: uEmail,
-        violationType: 'Daily Drawdown Limit Exceeded',
-        description: `Daily loss of ${currentDailyLossPct.toFixed(2)}% exceeded the allowed limit of ${dailyLossPctLimit}%.`,
+        violationType: 'Daily Drawdown Limit Exceeded ⚠️',
+        description: `Daily loss of ${currentDailyLossPct.toFixed(2)}% exceeded allowed limit of ${dailyLossPctLimit}%. Warning notice ⚠️ logged in Admin Panel for review. Account remains ACTIVE.`,
         tradeId: trade.id,
-        status: 'Breached',
+        status: 'Warning',
         timestamp: new Date().toISOString()
       });
     }
     
-    // Max Loss Limit Violation
+    // Max Loss Limit Violation -> Send Warning ⚠️ to Admin Panel
     if (currentMaxLossPct >= maxLossPctLimit) {
       const violationId = vId();
       await setDoc(doc(db, 'ruleViolations', violationId), {
         id: violationId,
         accountId: accData.id,
+        accountNumber: accData.login || accData.id,
         userId: accData.userId,
         userName: uName,
         userEmail: uEmail,
-        violationType: 'Max Drawdown Limit Exceeded',
-        description: `Overall max loss of ${currentMaxLossPct.toFixed(2)}% exceeded the allowed limit of ${maxLossPctLimit}%.`,
+        violationType: 'Max Drawdown Limit Exceeded ⚠️',
+        description: `Overall max loss of ${currentMaxLossPct.toFixed(2)}% exceeded allowed limit of ${maxLossPctLimit}%. Warning notice ⚠️ logged in Admin Panel for review. Account remains ACTIVE.`,
         tradeId: trade.id,
-        status: 'Breached',
+        status: 'Warning',
         timestamp: new Date().toISOString()
       });
     }
