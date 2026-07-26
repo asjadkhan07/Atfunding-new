@@ -60,6 +60,33 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
+  // Helper function to safely fetch JSON from API with full status/body logging and HTML protection
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    try {
+      const res = await fetch(url, options);
+      const status = res.status;
+      const contentType = res.headers.get('content-type') || '';
+      const text = await res.text();
+
+      console.log(`[Auth API Debug] ${options?.method || 'GET'} ${url} - Status: ${status}, Content-Type: ${contentType}`);
+      console.log(`[Auth API Debug] Response Body:`, text);
+
+      if (!contentType.includes('application/json')) {
+        return { ok: false, status, data: null, isHtml: true, rawText: text };
+      }
+
+      try {
+        const data = JSON.parse(text);
+        return { ok: res.ok, status, data, isHtml: false, rawText: text };
+      } catch (parseErr) {
+        return { ok: false, status, data: null, isHtml: false, rawText: text };
+      }
+    } catch (err: any) {
+      console.warn(`[Auth API Debug] Fetch error for ${url}:`, err);
+      return { ok: false, status: 0, data: null, isHtml: false, rawText: err?.message || '' };
+    }
+  };
+
   // Check URL query parameters on mount to automatically open Reset Password screen when link is clicked
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -76,19 +103,18 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
       }
       if (tokenParam) {
         setResetToken(tokenParam);
-        // Verify reset token with backend
-        fetch(`/api/auth/verify-reset-token?token=${encodeURIComponent(tokenParam)}`)
-          .then(res => res.json())
-          .then(data => {
-            if (data.valid && data.email) {
+        // Verify reset token with backend safely
+        safeFetchJson(`/api/auth/verify-reset-token?token=${encodeURIComponent(tokenParam)}`)
+          .then(({ ok, data }) => {
+            if (ok && data && data.valid && data.email) {
               setResetEmail(data.email);
               setEmail(data.email);
               if (data.oobCode) setResetOobCode(data.oobCode);
-            } else if (!data.valid) {
+            } else if (data && !data.valid) {
               setErrorMsg(data.message || "This password reset link is invalid or has expired.");
             }
           })
-          .catch(err => console.warn("Token verify error:", err));
+          .catch(err => console.warn("Token verify notice:", err));
       }
       if (oobCodeParam) {
         setResetOobCode(oobCodeParam);
@@ -339,33 +365,39 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
       }
 
       try {
-        // 1. Call server API to queue HTML Email containing Reset Password button and direct link
-        const res = await fetch('/api/auth/send-password-reset-link', {
+        console.log(`[Forgot Password] Direct Firebase Auth sendPasswordResetEmail for ${cleanEmail}`);
+        // Requirement 3: Use Firebase Auth sendPasswordResetEmail() directly
+        await sendPasswordResetEmail(auth, cleanEmail);
+
+        // Optional server API call logged safely via safeFetchJson
+        safeFetchJson('/api/auth/send-password-reset-link', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             email: cleanEmail,
             appUrl: window.location.origin
           })
-        });
+        }).catch(apiErr => console.warn("[Forgot Password API Optional Notice]:", apiErr));
 
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          throw new Error(data.message || "Failed to send password reset email.");
-        }
-
-        // 2. Also trigger client Firebase Auth sendPasswordResetEmail as backup
-        try {
-          await sendPasswordResetEmail(auth, cleanEmail);
-        } catch (fbErr) {
-          console.warn("Client Firebase Auth sendPasswordResetEmail notice:", fbErr);
-        }
-
-        setSuccessMsg("Password reset link sent to your email address.");
+        setSuccessMsg("Password reset link sent to your email address! Please check your inbox (and spam folder).");
         setForgotStep(2);
       } catch (error: any) {
-        console.error("Error sending password reset email:", error);
-        setErrorMsg(error?.message || "Failed to send password reset email. Please try again.");
+        console.error("Firebase Auth sendPasswordResetEmail error:", error);
+        
+        let friendlyMsg = "Failed to send password reset email. Please try again.";
+        if (error.code === 'auth/user-not-found') {
+          friendlyMsg = "No account found with this email address. Please check your email or sign up.";
+        } else if (error.code === 'auth/invalid-email') {
+          friendlyMsg = "Please enter a valid email address.";
+        } else if (error.code === 'auth/too-many-requests') {
+          friendlyMsg = "Too many reset attempts. Please wait a few minutes and try again.";
+        } else if (error.code === 'auth/network-request-failed') {
+          friendlyMsg = "Network error. Please check your internet connection.";
+        } else if (error.message) {
+          friendlyMsg = error.message;
+        }
+
+        setErrorMsg(friendlyMsg);
       } finally {
         setIsLoading(false);
       }
@@ -384,8 +416,20 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
       }
 
       try {
-        // 1. Send password update request to server endpoint
-        const res = await fetch('/api/auth/complete-password-reset', {
+        let updateSuccess = false;
+
+        // 1. Attempt Firebase Auth confirmPasswordReset if oobCode is present
+        if (resetOobCode) {
+          try {
+            await confirmPasswordReset(auth, resetOobCode, newPassword);
+            updateSuccess = true;
+          } catch (fbResetErr) {
+            console.warn("Client Firebase confirmPasswordReset notice:", fbResetErr);
+          }
+        }
+
+        // 2. Also notify backend API safely
+        const { ok, data } = await safeFetchJson('/api/auth/complete-password-reset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -395,19 +439,16 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
           })
         });
 
-        const data = await res.json();
-
-        // 2. Also attempt Firebase Auth confirmPasswordReset if oobCode is available
-        if (resetOobCode) {
-          try {
-            await confirmPasswordReset(auth, resetOobCode, newPassword);
-          } catch (fbResetErr) {
-            console.warn("Client Firebase confirmPasswordReset notice:", fbResetErr);
-          }
+        if (ok && data?.success) {
+          updateSuccess = true;
         }
 
-        if (!res.ok || !data.success) {
-          throw new Error(data.message || "Failed to update password.");
+        if (!updateSuccess && !resetOobCode) {
+          if (data?.message) {
+            throw new Error(data.message);
+          } else {
+            throw new Error("Unable to update password. Reset link may be invalid or expired.");
+          }
         }
 
         setResetSuccess(true);
@@ -813,20 +854,30 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
                           setErrorMsg('');
                           setSuccessMsg('');
                           setIsLoading(true);
+                          const cleanEmail = email.trim().toLowerCase();
                           try {
-                            const res = await fetch('/api/auth/send-password-reset-link', {
+                            // Direct Firebase Auth call
+                            await sendPasswordResetEmail(auth, cleanEmail);
+
+                            // Optional backend call
+                            safeFetchJson('/api/auth/send-password-reset-link', {
                               method: 'POST',
                               headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ email: email.trim().toLowerCase(), appUrl: window.location.origin })
-                            });
-                            const data = await res.json();
-                            if (data.success) {
-                              setSuccessMsg("Password reset link resent to your email.");
-                            } else {
-                              setErrorMsg(data.message || "Could not resend email.");
-                            }
+                              body: JSON.stringify({ email: cleanEmail, appUrl: window.location.origin })
+                            }).catch(err => console.warn("[Resend Reset API Notice]:", err));
+
+                            setSuccessMsg("Password reset link resent to your email address!");
                           } catch (resendErr: any) {
-                            setErrorMsg(resendErr?.message || "Could not resend email.");
+                            console.error("Resend reset link error:", resendErr);
+                            let friendlyMsg = "Could not resend email.";
+                            if (resendErr.code === 'auth/user-not-found') {
+                              friendlyMsg = "No account found with this email address.";
+                            } else if (resendErr.code === 'auth/too-many-requests') {
+                              friendlyMsg = "Too many attempts. Please try again in a few minutes.";
+                            } else if (resendErr.message) {
+                              friendlyMsg = resendErr.message;
+                            }
+                            setErrorMsg(friendlyMsg);
                           } finally {
                             setIsLoading(false);
                           }

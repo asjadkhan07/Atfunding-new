@@ -4,7 +4,7 @@ import {
   User, Mail, Phone, Globe, MapPin, Hash, Clipboard, FileText, Upload, 
   Image as ImageIcon, Loader2, ArrowLeft, Clock, XCircle, CheckCircle2, ChevronRight, Bell
 } from 'lucide-react';
-import { CHALLENGE_PACKAGES, ChallengePackage } from '../constants';
+import { CHALLENGE_PACKAGES, ChallengePackage, getAccountDrawdownLimits } from '../constants';
 import RulesCard from './RulesCard';
 import { db, auth, storage, handleFirestoreError, OperationType } from '../firebase';
 import { collection, doc, setDoc, getDoc, onSnapshot, addDoc, query, where, getDocs } from 'firebase/firestore';
@@ -548,9 +548,9 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
         password: 'Awaiting Approval',
         platform: 'ATTerminal',
         server: 'ATFunding-LiveServer',
-        profitTarget: selectedType === 'two_step' ? sizeVal * 0.08 : selectedType === 'one_step' ? sizeVal * 0.10 : selectedType === 'payout_later' ? sizeVal * 0.10 : 0,
-        dailyDrawdownLimit: selectedType === 'two_step' ? sizeVal * 0.05 : selectedType === 'one_step' ? sizeVal * 0.04 : selectedType === 'payout_later' ? sizeVal * 0.03 : sizeVal * 0.04,
-        maxDrawdownLimit: selectedType === 'two_step' ? sizeVal * 0.10 : selectedType === 'one_step' ? sizeVal * 0.08 : selectedType === 'payout_later' ? sizeVal * 0.06 : sizeVal * 0.05,
+        profitTarget: selectedType === 'two_step' ? sizeVal * 0.08 : selectedType === 'one_step' ? sizeVal * 0.10 : selectedType === 'payout_later' ? sizeVal * 0.08 : 0,
+        dailyDrawdownLimit: getAccountDrawdownLimits(selectedType, sizeVal).dailyDrawdownLimit,
+        maxDrawdownLimit: getAccountDrawdownLimits(selectedType, sizeVal).maxDrawdownLimit,
         expiresAt: expiresAt,
         createdAt: new Date().toISOString(),
         holdRuleEnabled: selectedType === 'instant_bolt' && holdRuleUpgradePurchased ? false : true,
@@ -585,9 +585,9 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
             password: 'Awaiting BOGO Approval',
             platform: 'ATTerminal',
             server: 'ATFunding-LiveServer',
-            profitTarget: freePkg.type === 'two_step' ? freePkg.size * 0.08 : freePkg.type === 'one_step' ? freePkg.size * 0.10 : freePkg.type === 'payout_later' ? freePkg.size * 0.10 : 0,
-            dailyDrawdownLimit: freePkg.type === 'two_step' ? freePkg.size * 0.05 : freePkg.type === 'one_step' ? freePkg.size * 0.04 : freePkg.type === 'payout_later' ? freePkg.size * 0.03 : freePkg.size * 0.04,
-            maxDrawdownLimit: freePkg.type === 'two_step' ? freePkg.size * 0.10 : freePkg.type === 'one_step' ? freePkg.size * 0.08 : freePkg.type === 'payout_later' ? freePkg.size * 0.06 : freePkg.size * 0.05,
+            profitTarget: freePkg.type === 'two_step' ? freePkg.size * 0.08 : freePkg.type === 'one_step' ? freePkg.size * 0.10 : freePkg.type === 'payout_later' ? freePkg.size * 0.08 : 0,
+            dailyDrawdownLimit: getAccountDrawdownLimits(freePkg.type, freePkg.size).dailyDrawdownLimit,
+            maxDrawdownLimit: getAccountDrawdownLimits(freePkg.type, freePkg.size).maxDrawdownLimit,
             createdAt: new Date().toISOString(),
             isBogoFree: true
           };

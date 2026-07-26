@@ -54,10 +54,10 @@ export function evaluateAccountRisk(
 
   if (dailyLoss >= dailyLimit) {
     isDailyBreached = true;
-    breachReason = `Daily drawdown threshold of $${dailyLimit.toLocaleString()} breached. Starting day balance: $${account.dailyStartingBalance.toLocaleString()}, Live equity: $${metrics.equity.toLocaleString()} (Daily Loss: $${dailyLoss.toLocaleString()}).`;
+    breachReason = 'Daily Loss Reached';
   } else if (overallLoss >= maxLimit) {
     isMaxBreached = true;
-    breachReason = `Overall maximum drawdown limit of $${maxLimit.toLocaleString()} breached. Starting account balance: $${account.startingBalance.toLocaleString()}, Live equity: $${metrics.equity.toLocaleString()} (Max Loss: $${overallLoss.toLocaleString()}).`;
+    breachReason = 'Overall Loss Reached';
   }
 
   // 6. Check Profit Target Met (Must not be breached, must be higher than target profit)

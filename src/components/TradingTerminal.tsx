@@ -264,6 +264,9 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   // Centralized reference to selected symbol price from global priceEngine
   const activeSelectedSymbol = priceEngine[selectedSymbol.symbol] || selectedSymbol;
 
+  // Track trades that have triggered the 2-minute warning
+  const warned2MinTradesRef = useRef<Set<string>>(new Set());
+
   // 3. Automated real-time evaluation risk checks & auto-liquidation
   useEffect(() => {
     if (!selectedAccount || selectedAccount.status !== 'active') return;
@@ -274,6 +277,41 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       handleBreachAccount(risk.breachReason);
     }
   }, [metrics, selectedAccount?.id]);
+
+  // Automated real-time holding duration monitor (2-min warning popup, 10-min instant breach)
+  useEffect(() => {
+    if (!selectedAccount || selectedAccount.status !== 'active' || openTrades.length === 0) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      openTrades.forEach((trade) => {
+        if (!trade.openTime) return;
+        const openTime = new Date(trade.openTime).getTime();
+        const durationSec = Math.floor((now - openTime) / 1000);
+
+        if (durationSec >= 600) {
+          // 10 minutes exceeded: Instantly breach account!
+          console.warn(`Position duration exceeded 10 mins (${durationSec}s) on trade #${trade.id}. Breaching account.`);
+          handleBreachAccount('10 Minute Rule Violation');
+        } else if (durationSec >= 120) {
+          // 2 minutes exceeded: Show warning popup!
+          if (!warned2MinTradesRef.current.has(trade.id)) {
+            warned2MinTradesRef.current.add(trade.id);
+            setRuleBreachModal({
+              isOpen: true,
+              title: '⚠️ Rule Violation Warning',
+              subtitle: 'Position Duration Warning',
+              type: 'warning',
+              message: 'Warning: Positions must not exceed 2 minutes.',
+              details: `Trade #${trade.id} on ${trade.symbol} (${trade.lots} lots) has been open for ${Math.floor(durationSec / 60)}m ${durationSec % 60}s. Holding a position for more than 10 minutes will result in an instant account breach.`
+            });
+          }
+        }
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [openTrades, selectedAccount?.id, selectedAccount?.status]);
 
   // Automated Real-time TP/SL check (reading strictly from centralized priceEngine)
   useEffect(() => {
@@ -351,12 +389,60 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
         await checkRuleViolations(trade, now, finalProfit, newBalance, accData);
 
         // Profit Target Validation (Only for active evaluated challenges)
-        if (currentStatus === 'active' && accData.profitTarget > 0) {
+        const effectiveTarget = accData.accountType === 'payout_later' ? accData.startingBalance * 0.08 : accData.profitTarget;
+        if (currentStatus === 'active' && effectiveTarget > 0) {
           const currentProfit = newBalance - accData.startingBalance;
-          if (currentProfit >= accData.profitTarget) {
+          if (currentProfit >= effectiveTarget) {
+            const userEmail = accData.userEmail || userProfile?.email || '';
+            const passedIso = new Date().toISOString();
+
             if (accData.accountType === 'one_step') {
-              currentStatus = 'passed';
-              currentPhase = 3; // Funded
+              currentStatus = 'pending_review';
+              await updateDoc(accountRef, {
+                balance: newBalance,
+                equity: newEquity,
+                status: 'pending_review',
+                phaseStatus: 'pending_review',
+                passedAt: passedIso
+              });
+
+              // Create user notification
+              const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+              await setDoc(doc(db, 'notifications', notifId), {
+                id: notifId,
+                userId: accData.userId,
+                title: '1-Step Challenge Passed! Review Started 🚀',
+                message: `Congratulations! Account #${accData.login || accData.id} passed the 1-Step profit target. Your account is now in PENDING REVIEW for Funded Account issuance.`,
+                type: 'info',
+                read: false,
+                createdAt: passedIso
+              });
+
+              // Queue review email
+              if (userEmail) {
+                const queueId = `queue-rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                await setDoc(doc(db, 'email_queue', queueId), {
+                  id: queueId,
+                  recipient: userEmail,
+                  subject: 'ATFunding: 1-Step Challenge Passed - Pending Review',
+                  message: `Hello Trader,\n\nCongratulations! You reached the profit target on 1-Step Account #${accData.login || accData.id}.\n\nYour account is now undergoing manual review by our audit team. Upon approval, your Funded Account will be issued automatically.\n\nATFunding Compliance Team`,
+                  createdAt: passedIso,
+                  status: 'pending'
+                });
+              }
+
+              setSuccessMsg("CONGRATULATIONS! You passed your 1-Step Challenge. Your account is now in Pending Review!");
+              setRuleBreachModal({
+                isOpen: true,
+                title: '🎉 1-Step Challenge Passed!',
+                subtitle: 'Account Status: Pending Review',
+                type: 'success',
+                message: `Congratulations! You reached the profit target on 1-Step Account #${accData.login || accData.id}.`,
+                details: `Your account evaluation is now under Manual Review. Once approved by our team, your live Funded Account will be issued automatically.`
+              });
+              onRefreshAccount();
+              return;
+
             } else if (accData.accountType === 'two_step') {
               if (accData.phase === 1) {
                 currentStatus = 'phase2_pending';
@@ -365,7 +451,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                   equity: newEquity,
                   status: 'phase2_pending',
                   phaseStatus: 'phase2_pending',
-                  passedAt: new Date().toISOString()
+                  passedAt: passedIso
                 });
 
                 // Create user notification
@@ -373,21 +459,34 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 await setDoc(doc(db, 'notifications', notifId), {
                   id: notifId,
                   userId: accData.userId,
-                  title: 'Phase 1 Passed! 🎉',
-                  message: `Congratulations! Account #${accData.login || accData.id} has passed Phase 1 profit target. Phase 2 activation is now PENDING ADMIN APPROVAL.`,
-                  type: 'success',
+                  title: 'Phase 1 Passed! Review Started 🚀',
+                  message: `Congratulations! Account #${accData.login || accData.id} has passed Phase 1 profit target. Phase 2 activation is now PENDING REVIEW.`,
+                  type: 'info',
                   read: false,
-                  createdAt: new Date().toISOString()
+                  createdAt: passedIso
                 });
 
-                setSuccessMsg("CONGRATULATIONS! You passed Phase 1. Phase 2 activation is pending admin approval!");
+                // Queue review email
+                if (userEmail) {
+                  const queueId = `queue-rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                  await setDoc(doc(db, 'email_queue', queueId), {
+                    id: queueId,
+                    recipient: userEmail,
+                    subject: 'ATFunding: Phase 1 Passed - Pending Review',
+                    message: `Hello Trader,\n\nCongratulations! You reached the profit target for Phase 1 on Account #${accData.login || accData.id}.\n\nYour account is now undergoing manual review. Upon admin approval, your Phase 2 account will be unlocked.\n\nATFunding Compliance Team`,
+                    createdAt: passedIso,
+                    status: 'pending'
+                  });
+                }
+
+                setSuccessMsg("CONGRATULATIONS! You passed Phase 1. Phase 2 activation is pending admin review!");
                 setRuleBreachModal({
                   isOpen: true,
                   title: '🎉 Phase 1 Passed Successfully!',
-                  subtitle: 'Phase 2 Activation Pending Admin Approval',
+                  subtitle: 'Phase 2 Activation Pending Review',
                   type: 'success',
                   message: `Congratulations! You reached the profit target for Phase 1 on Account #${accData.login || accData.id}.`,
-                  details: `Your Phase 1 evaluation has been verified and submitted for review. Once approved by the admin team in the Admin Panel, your Phase 2 account will be activated immediately.`
+                  details: `Your Phase 1 evaluation has been submitted for Manual Review. Once approved by our team, your Phase 2 account will be activated immediately.`
                 });
                 onRefreshAccount();
                 return;
@@ -398,7 +497,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                   equity: newEquity,
                   status: 'funded_pending',
                   phaseStatus: 'funded_pending',
-                  passedAt: new Date().toISOString()
+                  passedAt: passedIso
                 });
 
                 // Create user notification
@@ -406,28 +505,84 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 await setDoc(doc(db, 'notifications', notifId), {
                   id: notifId,
                   userId: accData.userId,
-                  title: 'Phase 2 Passed! Evaluation Complete! 🎉',
-                  message: `Congratulations! Account #${accData.login || accData.id} passed Phase 2. Funded Account activation is now PENDING ADMIN APPROVAL.`,
-                  type: 'success',
+                  title: 'Phase 2 Passed! Review Started 🚀',
+                  message: `Congratulations! Account #${accData.login || accData.id} passed Phase 2. Funded Account activation is now PENDING REVIEW.`,
+                  type: 'info',
                   read: false,
-                  createdAt: new Date().toISOString()
+                  createdAt: passedIso
                 });
 
-                setSuccessMsg("CONGRATULATIONS! You passed Phase 2. Funded account activation is pending admin approval!");
+                // Queue review email
+                if (userEmail) {
+                  const queueId = `queue-rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                  await setDoc(doc(db, 'email_queue', queueId), {
+                    id: queueId,
+                    recipient: userEmail,
+                    subject: 'ATFunding: Phase 2 Passed - Pending Review',
+                    message: `Hello Trader,\n\nCongratulations! You completed Phase 2 on Account #${accData.login || accData.id}.\n\nYour account is now undergoing final manual review. Upon admin approval, your live Funded Account will be issued automatically.\n\nATFunding Compliance Team`,
+                    createdAt: passedIso,
+                    status: 'pending'
+                  });
+                }
+
+                setSuccessMsg("CONGRATULATIONS! You passed Phase 2. Funded account activation is pending admin review!");
                 setRuleBreachModal({
                   isOpen: true,
                   title: '🎉 Evaluation Phase 2 Complete!',
-                  subtitle: 'Funded Account & Payouts Pending Admin Approval',
+                  subtitle: 'Funded Account Pending Admin Review',
                   type: 'success',
-                  message: `Outstanding performance! You passed Phase 2 on Account #${accData.login || accData.id}. You have completed both evaluation phases!`,
-                  details: `Your account is now pending final admin approval for Funded Account activation. Once approved by the admin team, your live Funded Account and Payout Withdrawal section will be unlocked!`
+                  message: `Outstanding performance! You passed Phase 2 on Account #${accData.login || accData.id}.`,
+                  details: `Your account is now pending final manual review for Funded Account activation. Once approved by our team, your live Funded Account and Payout section will unlock automatically!`
                 });
                 onRefreshAccount();
                 return;
               }
             } else if (accData.accountType === 'payout_later') {
-              currentStatus = 'passed';
-              currentPhase = 3;
+              currentStatus = 'pending_review';
+              await updateDoc(accountRef, {
+                balance: newBalance,
+                equity: newEquity,
+                status: 'pending_review',
+                phaseStatus: 'pending_review',
+                passedAt: passedIso
+              });
+
+              // Create user notification
+              const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+              await setDoc(doc(db, 'notifications', notifId), {
+                id: notifId,
+                userId: accData.userId,
+                title: 'Payout Later Challenge Passed! Review Started 🚀',
+                message: `Congratulations! Account #${accData.login || accData.id} completed the Payout Later challenge. Account is now in PENDING REVIEW.`,
+                type: 'info',
+                read: false,
+                createdAt: passedIso
+              });
+
+              // Queue review email
+              if (userEmail) {
+                const queueId = `queue-rev-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                await setDoc(doc(db, 'email_queue', queueId), {
+                  id: queueId,
+                  recipient: userEmail,
+                  subject: 'ATFunding: Payout Later Challenge Passed - Pending Review',
+                  message: `Hello Trader,\n\nCongratulations! You completed the Payout Later Challenge on Account #${accData.login || accData.id}.\n\nYour account is now undergoing manual review. Upon admin approval, your payout account will be activated.\n\nATFunding Compliance Team`,
+                  createdAt: passedIso,
+                  status: 'pending'
+                });
+              }
+
+              setSuccessMsg("CONGRATULATIONS! You completed your Payout Later challenge. Account is in Pending Review!");
+              setRuleBreachModal({
+                isOpen: true,
+                title: '🎉 Payout Later Challenge Complete!',
+                subtitle: 'Account Status: Pending Review',
+                type: 'success',
+                message: `Outstanding job! You completed the Payout Later challenge on Account #${accData.login || accData.id}.`,
+                details: `Your account is now in Pending Review. Once approved by our team, your payout account will be activated immediately.`
+              });
+              onRefreshAccount();
+              return;
             }
           }
         }
@@ -453,41 +608,68 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
 
   // Handle challenge breach (liquidation and status lock)
   const handleBreachAccount = async (reason: string) => {
-    if (!selectedAccount) return;
+    if (!selectedAccount || selectedAccount.status === 'breached') return;
     try {
       const accountRef = doc(db, 'accounts', selectedAccount.id);
       
-      // Close all open positions at current market quotes (reading strictly from centralized priceEngine)
+      // Close all open positions at current market quotes
       const closePromises = openTrades.map((trade) => {
         const symData = priceEngine[trade.symbol];
         const exitPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
-        return executeDirectClose(trade, exitPrice, 'Liquidation due to account breach');
+        return executeDirectClose(trade, exitPrice, `Liquidation due to breach: ${reason}`);
       });
       await Promise.all(closePromises);
 
       // Lock account status as breached
       await updateDoc(accountRef, {
         status: 'breached',
-        equity: metrics.balance // Reset equity to balance upon liquidation
+        breachReason: reason,
+        equity: metrics.balance
       });
 
-      // Insert record in violations database
+      // Insert record in 'breaches' audit log collection
+      const breachId = 'BRCH-' + Math.floor(100000 + Math.random() * 900000);
+      const uEmail = selectedAccount.userEmail || userProfile?.email || 'trader@atfunding.io';
+      await setDoc(doc(db, 'breaches', breachId), {
+        id: breachId,
+        accountId: selectedAccount.id,
+        userId: selectedAccount.userId || userId,
+        userEmail: uEmail,
+        breachReason: reason,
+        breachDate: new Date().toISOString(),
+        adminName: 'Automated Risk System'
+      });
+
+      // Insert record in 'ruleViolations' collection
       const violationId = 'VIO-' + Math.floor(100000 + Math.random() * 900000);
       const uName = userProfile?.name || userProfile?.displayName || 'Elite Trader';
-      const uEmail = userProfile?.email || 'trader@atfunding.io';
       await setDoc(doc(db, 'ruleViolations', violationId), {
         id: violationId,
         accountId: selectedAccount.id,
-        userId,
+        userId: selectedAccount.userId || userId,
         userName: uName,
         userEmail: uEmail,
-        violationType: 'Account Evaluation Drawdown Breach',
-        description: reason,
+        violationType: reason,
+        description: reason === '10 Minute Rule Violation'
+          ? 'Account Breached - Maximum holding time exceeded.'
+          : `Account Breached - ${reason}.`,
         status: 'Breached',
         timestamp: new Date().toISOString()
       });
 
-      setErrorMsg(`CRITICAL VIOLATION: ${reason} Trading privileges revoked.`);
+      // Show breach popup modal
+      setRuleBreachModal({
+        isOpen: true,
+        title: 'Account Breached',
+        subtitle: reason === '10 Minute Rule Violation' ? 'Maximum holding time exceeded' : 'Drawdown Limit Exceeded',
+        type: 'warning',
+        message: reason === '10 Minute Rule Violation'
+          ? 'Account Breached - Maximum holding time exceeded.'
+          : `Account Breached - ${reason}.`,
+        details: `Trading privileges on account #${selectedAccount.id || selectedAccount.login} have been permanently disabled.`
+      });
+
+      setErrorMsg(`ACCOUNT BREACHED: ${reason}. Trading disabled.`);
       onRefreshAccount();
     } catch (e) {
       console.error("Error breaching account:", e);
@@ -882,8 +1064,9 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   };
 
   const getProfitTargetProgress = () => {
-    if (!selectedAccount || selectedAccount.profitTarget <= 0) return { pct: 0, rem: 0, reached: true };
-    const target = selectedAccount.profitTarget;
+    if (!selectedAccount) return { pct: 0, rem: 0, reached: true };
+    const target = selectedAccount.accountType === 'payout_later' ? selectedAccount.startingBalance * 0.08 : selectedAccount.profitTarget;
+    if (target <= 0) return { pct: 0, rem: 0, reached: true };
     const netProfit = metrics.balance - selectedAccount.startingBalance;
     const remaining = Number((target - netProfit).toFixed(2));
     const percentReached = Number(Math.min(100, Math.max(0, (netProfit / target) * 100)).toFixed(1));
@@ -1112,29 +1295,34 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
               </div>
 
               {/* Profit Target Rule */}
-              <div className="bg-[#0e1322] rounded-xl p-3.5 space-y-2 border border-white/5">
-                <div className="flex justify-between text-xs">
-                  <span className="text-slate-400">Profit Target</span>
-                  <span className="font-mono text-emerald-400 font-bold">
-                    {selectedAccount.profitTarget > 0 ? `+$${selectedAccount.profitTarget.toLocaleString()}` : 'No target'}
-                  </span>
-                </div>
-                <div className="flex justify-between items-end">
-                  <span className="text-[10px] text-slate-500">
-                    {selectedAccount.profitTarget > 0 ? 'Remaining to target' : 'Net closed profit'}
-                  </span>
-                  <span className="text-xs font-bold text-white font-mono">
-                    ${selectedAccount.profitTarget > 0 ? profitTarget.rem.toLocaleString() : (metrics.balance - selectedAccount.startingBalance).toLocaleString()}
-                  </span>
-                </div>
-                <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
-                  <div className="bg-emerald-500 h-full rounded-full transition-all duration-300" style={{ width: `${profitTarget.pct}%` }} />
-                </div>
-                <div className="flex justify-between text-[9px] text-slate-500">
-                  <span>{selectedAccount.profitTarget > 0 ? `Progress: ${profitTarget.pct}%` : 'Phase Passed / Active'}</span>
-                  <span>Current Profit: ${(metrics.balance - selectedAccount.startingBalance).toLocaleString()}</span>
-                </div>
-              </div>
+              {(() => {
+                const targetVal = selectedAccount.accountType === 'payout_later' ? selectedAccount.startingBalance * 0.08 : selectedAccount.profitTarget;
+                return (
+                  <div className="bg-[#0e1322] rounded-xl p-3.5 space-y-2 border border-white/5">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-slate-400">Profit Target</span>
+                      <span className="font-mono text-emerald-400 font-bold">
+                        {targetVal > 0 ? `+$${targetVal.toLocaleString()}` : 'No target'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-end">
+                      <span className="text-[10px] text-slate-500">
+                        {targetVal > 0 ? 'Remaining to target' : 'Net closed profit'}
+                      </span>
+                      <span className="text-xs font-bold text-white font-mono">
+                        ${targetVal > 0 ? profitTarget.rem.toLocaleString() : (metrics.balance - selectedAccount.startingBalance).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden">
+                      <div className="bg-emerald-500 h-full rounded-full transition-all duration-300" style={{ width: `${profitTarget.pct}%` }} />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-500">
+                      <span>{targetVal > 0 ? `Progress: ${profitTarget.pct}%` : 'Phase Passed / Active'}</span>
+                      <span>Current Profit: ${(metrics.balance - selectedAccount.startingBalance).toLocaleString()}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Trading Days Rule */}
               <div className="bg-[#0e1322] rounded-xl p-3.5 space-y-2 border border-white/5">
@@ -1846,7 +2034,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
 
       {/* RULE BREACH / PHASE PASS WARNING POPUP MODAL */}
       {ruleBreachModal && ruleBreachModal.isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
           <div className={`border-2 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl relative ${
             ruleBreachModal.type === 'success' 
               ? 'bg-[#0b192e] border-emerald-500/50 shadow-emerald-950/40' 

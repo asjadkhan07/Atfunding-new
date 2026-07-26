@@ -33,7 +33,7 @@ export interface UserProfile {
 }
 
 export type AccountType = 'one_step' | 'two_step' | 'payout_later' | 'instant_bolt' | 'trial' | 'funded';
-export type AccountStatus = 'active' | 'breached' | 'passed' | 'payout_requested' | 'Pending Approval' | 'phase2_pending' | 'funded_pending';
+export type AccountStatus = 'active' | 'breached' | 'passed' | 'payout_requested' | 'Pending Approval' | 'phase2_pending' | 'funded_pending' | 'pending_review' | 'Pending Review' | 'rejected' | 'approved' | 'funded';
 
 export interface TradingAccount {
   id: string;

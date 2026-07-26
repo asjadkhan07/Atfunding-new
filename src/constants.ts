@@ -158,7 +158,7 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     price: 9,
     dailyDrawdownPercent: 5,
     maxDrawdownPercent: 10,
-    profitTargetPercent: 10,
+    profitTargetPercent: 8,
     leverage: '1:50',
     minimumDays: 4,
     payoutSplit: 80,
@@ -171,7 +171,7 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     price: 18,
     dailyDrawdownPercent: 5,
     maxDrawdownPercent: 10,
-    profitTargetPercent: 10,
+    profitTargetPercent: 8,
     leverage: '1:50',
     minimumDays: 4,
     payoutSplit: 80,
@@ -184,7 +184,7 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     price: 27,
     dailyDrawdownPercent: 5,
     maxDrawdownPercent: 10,
-    profitTargetPercent: 10,
+    profitTargetPercent: 8,
     leverage: '1:50',
     minimumDays: 4,
     payoutSplit: 80,
@@ -197,7 +197,7 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     price: 36,
     dailyDrawdownPercent: 5,
     maxDrawdownPercent: 10,
-    profitTargetPercent: 10,
+    profitTargetPercent: 8,
     leverage: '1:50',
     minimumDays: 4,
     payoutSplit: 80,
@@ -210,7 +210,7 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     price: 45,
     dailyDrawdownPercent: 5,
     maxDrawdownPercent: 10,
-    profitTargetPercent: 10,
+    profitTargetPercent: 8,
     leverage: '1:50',
     minimumDays: 4,
     payoutSplit: 80,
@@ -218,13 +218,13 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
 
   // ATF INSTANT ACCOUNT
   {
-    id: 'instant_bolt_1_5k',
+    id: 'instant_bolt_2k',
     type: 'instant_bolt',
-    name: '$1.5K ATF Instant',
-    size: 1500,
+    name: '$2K ATF Instant',
+    size: 2000,
     price: 99,
-    dailyDrawdownPercent: 5,
-    maxDrawdownPercent: 10,
+    dailyDrawdownPercent: 0.5,
+    maxDrawdownPercent: 1,
     profitTargetPercent: 0, // No target, immediate funding payout eligibility
     leverage: '1:30',
     minimumDays: 0,
@@ -236,8 +236,8 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$3K ATF Instant',
     size: 3000,
     price: 189,
-    dailyDrawdownPercent: 5,
-    maxDrawdownPercent: 10,
+    dailyDrawdownPercent: 0.5,
+    maxDrawdownPercent: 1,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
@@ -249,8 +249,8 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$6K ATF Instant',
     size: 6000,
     price: 349,
-    dailyDrawdownPercent: 5,
-    maxDrawdownPercent: 10,
+    dailyDrawdownPercent: 1,
+    maxDrawdownPercent: 2,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
@@ -262,8 +262,8 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$9K ATF Instant',
     size: 9000,
     price: 499,
-    dailyDrawdownPercent: 5,
-    maxDrawdownPercent: 10,
+    dailyDrawdownPercent: 1,
+    maxDrawdownPercent: 2,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
@@ -312,3 +312,40 @@ export const MOCK_TRADING_SYMBOLS = [
   { symbol: 'BTCUSD', name: 'Bitcoin / US Dollar', price: 66500.00, spread: 18.0 },
   { symbol: 'ETHUSD', name: 'Ethereum / US Dollar', price: 3480.00, spread: 1.80 }
 ];
+
+export function getAccountDrawdownLimits(accountType: string, size: number) {
+  if (accountType === 'instant_bolt') {
+    if (size <= 3000) {
+      return {
+        dailyDrawdownLimit: size * 0.005, // 0.5%
+        maxDrawdownLimit: size * 0.01     // 1%
+      };
+    } else {
+      return {
+        dailyDrawdownLimit: size * 0.01,  // 1%
+        maxDrawdownLimit: size * 0.02     // 2%
+      };
+    }
+  } else if (accountType === 'two_step') {
+    return {
+      dailyDrawdownLimit: size * 0.05,
+      maxDrawdownLimit: size * 0.10
+    };
+  } else if (accountType === 'one_step') {
+    return {
+      dailyDrawdownLimit: size * 0.04,
+      maxDrawdownLimit: size * 0.08
+    };
+  } else if (accountType === 'payout_later') {
+    return {
+      dailyDrawdownLimit: size * 0.03,
+      maxDrawdownLimit: size * 0.06
+    };
+  } else {
+    return {
+      dailyDrawdownLimit: size * 0.05,
+      maxDrawdownLimit: size * 0.10
+    };
+  }
+}
+

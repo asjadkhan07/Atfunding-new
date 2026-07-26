@@ -412,13 +412,52 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     }
   };
 
-  const getAccountStatus = (acc: TradingAccount) => {
-    if (acc.accountType === 'trial' && acc.expiresAt) {
-      if (new Date(acc.expiresAt).getTime() < Date.now()) {
-        return 'expired';
-      }
+  const getAccountStatusLabel = (acc: TradingAccount) => {
+    if (acc.status === 'breached') return 'Breached';
+    if (acc.status === 'rejected') return 'Rejected';
+    if (
+      acc.status === 'pending_review' || 
+      acc.status === 'Pending Review' || 
+      acc.status === 'phase2_pending' || 
+      acc.status === 'funded_pending' || 
+      acc.status === 'Pending Approval'
+    ) {
+      return 'Pending Review';
     }
+    if (acc.status === 'approved') return 'Approved';
+    if (acc.status === 'funded' || acc.phase === 3 || acc.accountType === 'funded') return 'Funded';
+    if (acc.status === 'passed') return 'Passed';
+    if (acc.accountType === 'trial' && acc.expiresAt && new Date(acc.expiresAt).getTime() < Date.now()) {
+      return 'Expired';
+    }
+    if (acc.status === 'active') return 'Running';
     return acc.status;
+  };
+
+  const getAccountStatusBadgeStyle = (acc: TradingAccount) => {
+    const label = getAccountStatusLabel(acc);
+    switch (label) {
+      case 'Running':
+        return 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
+      case 'Passed':
+        return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+      case 'Pending Review':
+        return 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse';
+      case 'Approved':
+        return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+      case 'Rejected':
+        return 'bg-rose-500/20 text-rose-300 border border-rose-500/40';
+      case 'Funded':
+        return 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40';
+      case 'Breached':
+        return 'bg-red-500/20 text-red-400 border border-red-500/40';
+      default:
+        return 'bg-slate-500/20 text-slate-300 border border-slate-500/30';
+    }
+  };
+
+  const getAccountStatus = (acc: TradingAccount) => {
+    return getAccountStatusLabel(acc);
   };
   
   // Dashboard Metrics state
@@ -616,8 +655,19 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     const q = query(collection(db, 'accounts'), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetched: TradingAccount[] = [];
-      snapshot.forEach((doc) => {
-        fetched.push(doc.data() as TradingAccount);
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as TradingAccount;
+        if (data.accountType === 'payout_later') {
+          const startBal = data.startingBalance || data.size || 10000;
+          const expectedTarget = startBal * 0.08;
+          if (data.profitTarget !== expectedTarget) {
+            data.profitTarget = expectedTarget;
+            updateDoc(doc(db, 'accounts', data.id), { profitTarget: expectedTarget }).catch((err) => {
+              console.warn("Could not sync profitTarget to Firestore:", err);
+            });
+          }
+        }
+        fetched.push(data);
       });
       setAccounts(fetched);
 
@@ -877,16 +927,8 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                         <span className="font-bold text-white block">{acc.id}</span>
                         <span className="text-[10px] text-slate-400 block font-mono">Bal: ${acc.balance.toFixed(2)}</span>
                       </div>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        getAccountStatus(acc) === 'active' 
-                          ? 'bg-emerald-500/10 text-emerald-400' 
-                          : getAccountStatus(acc) === 'expired' 
-                          ? 'bg-amber-500/10 text-amber-400' 
-                          : getAccountStatus(acc).toLowerCase().includes('pending')
-                          ? 'bg-amber-500/10 text-amber-500 animate-pulse'
-                          : 'bg-red-500/10 text-red-400'
-                      }`}>
-                        {getAccountStatus(acc)}
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${getAccountStatusBadgeStyle(acc)}`}>
+                        {getAccountStatusLabel(acc)}
                       </span>
                     </button>
                   ))
@@ -987,9 +1029,14 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
               </div>
 
               {selectedAccount && (
-                <span className="px-3.5 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-bold">
-                  Phase {selectedAccount.phase} Evaluation
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`px-3 py-1 rounded-full text-xs font-extrabold uppercase ${getAccountStatusBadgeStyle(selectedAccount)}`}>
+                    {getAccountStatusLabel(selectedAccount)}
+                  </span>
+                  <span className="px-3.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-bold font-mono">
+                    Phase {selectedAccount.phase}
+                  </span>
+                </div>
               )}
             </div>
 
@@ -1045,6 +1092,53 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                       <p className="text-emerald-300 font-medium pt-1">
                         Your account is pending final admin approval for Funded Account activation. Once approved by the admin team, your Funded Account and Payout section will unlock automatically!
                       </p>
+                    </div>
+                  </div>
+                )}
+
+                {(selectedAccount.status === 'pending_review' || selectedAccount.status === 'Pending Review') && (
+                  <div className="p-5 bg-amber-500/10 border-2 border-amber-500/40 rounded-3xl text-amber-200 text-xs leading-relaxed flex items-start gap-3.5 shadow-xl animate-fade-in">
+                    <Clock className="w-6 h-6 flex-shrink-0 text-amber-400 mt-0.5 animate-spin" style={{ animationDuration: '8s' }} />
+                    <div className="space-y-1">
+                      <strong className="block text-amber-100 font-bold uppercase tracking-wider text-sm">⏳ Challenge Passed — Account Under Manual Review</strong>
+                      <p className="text-slate-300">
+                        Congratulations on completing your evaluation criteria! Account #{selectedAccount.login || selectedAccount.id} is currently undergoing manual risk and compliance audit.
+                      </p>
+                      <p className="text-amber-300 font-medium pt-1">
+                        Upon administrative approval in the Admin Panel, your account will be activated/promoted automatically. You will receive an email and dashboard notification once complete.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {selectedAccount.status === 'rejected' && (
+                  <div className="p-5 bg-rose-500/10 border-2 border-rose-500/40 rounded-3xl text-rose-200 text-xs leading-relaxed flex items-start gap-3.5 shadow-xl animate-fade-in">
+                    <AlertCircle className="w-6 h-6 flex-shrink-0 text-rose-400 mt-0.5" />
+                    <div className="space-y-1">
+                      <strong className="block text-rose-100 font-bold uppercase tracking-wider text-sm">❌ Account Review Rejected</strong>
+                      <p className="text-slate-300">
+                        Your account review for Account #{selectedAccount.login || selectedAccount.id} was rejected during administrative compliance audit.
+                      </p>
+                      <div className="mt-2 p-3 bg-rose-950/60 border border-rose-500/30 rounded-xl font-mono text-rose-200">
+                        <span className="font-bold text-rose-400 block text-[10px] uppercase tracking-wider mb-1">Rejection Reason:</span>
+                        {selectedAccount.rejectionReason || selectedAccount.breachReason || 'Non-compliance with prop evaluation rules.'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {selectedAccount.status === 'breached' && (
+                  <div className="p-5 bg-red-500/10 border-2 border-red-500/40 rounded-3xl text-red-200 text-xs leading-relaxed flex items-start gap-3.5 shadow-xl animate-fade-in">
+                    <AlertCircle className="w-6 h-6 flex-shrink-0 text-red-400 mt-0.5" />
+                    <div className="space-y-1">
+                      <strong className="block text-red-100 font-bold uppercase tracking-wider text-sm">🚨 Account Breached — Trading Disabled</strong>
+                      <p className="text-slate-300">
+                        Account #{selectedAccount.login || selectedAccount.id} breached risk parameters. Further trading has been automatically disabled.
+                      </p>
+                      <div className="mt-2 p-3 bg-red-950/60 border border-red-500/30 rounded-xl font-mono text-red-200">
+                        <span className="font-bold text-red-400 block text-[10px] uppercase tracking-wider mb-1">Breach Reason:</span>
+                        {selectedAccount.breachReason || selectedAccount.rejectionReason || 'Drawdown limit or hold time rule violated.'}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1149,9 +1243,9 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                     ) : (
                       <>
                         <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Target Objective</p>
-                        {selectedAccount.profitTarget > 0 ? (
-                          (() => {
-                            const target = selectedAccount.profitTarget;
+                        {(() => {
+                          const target = selectedAccount.accountType === 'payout_later' ? selectedAccount.startingBalance * 0.08 : selectedAccount.profitTarget;
+                          if (target > 0) {
                             const currentProfit = selectedAccount.balance - selectedAccount.startingBalance;
                             const percent = Math.min(100, Math.max(0, (currentProfit / target) * 100));
 
@@ -1171,13 +1265,15 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                                 </div>
                               </>
                             );
-                          })()
-                        ) : (
-                          <>
-                            <p className="text-2xl font-bold text-emerald-400">Direct Live Funding</p>
-                            <p className="text-[10px] text-slate-500 mt-1">No targets. Profit splits eligible immediately.</p>
-                          </>
-                        )}
+                          } else {
+                            return (
+                              <>
+                                <p className="text-2xl font-bold text-emerald-400">Direct Live Funding</p>
+                                <p className="text-[10px] text-slate-500 mt-1">No targets. Profit splits eligible immediately.</p>
+                              </>
+                            );
+                          }
+                        })()}
                       </>
                     )}
                   </div>
@@ -1301,8 +1397,8 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
           </div>
         )}
 
-        {/* TERMINAL TAB */}
-        {activeTab === 'terminal' && (
+        {/* TERMINAL TAB AND BACKGROUND POSITION/RISK MONITOR */}
+        <div className={activeTab === 'terminal' ? 'block' : 'hidden'}>
           <TradingTerminal
             userId={user.uid}
             selectedAccount={selectedAccount}
@@ -1310,7 +1406,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
               // trigger refresh
             }}
           />
-        )}
+        </div>
 
         {/* BUY TAB */}
         {activeTab === 'buy' && (

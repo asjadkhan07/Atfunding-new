@@ -31,7 +31,7 @@ export default function RulesCard({
   let accountTypeName = 'ATF Instant';
   if (isTwoStep) accountTypeName = phase === 2 ? 'Two Step - Phase 2' : 'Two Step - Phase 1';
   else if (isOneStep) accountTypeName = 'One Step Evaluation';
-  else if (isPayoutLater) accountTypeName = 'ATF Funded';
+  else if (isPayoutLater) accountTypeName = 'Payout Later Challenge';
   else if (isTrial) accountTypeName = 'AT Trial Account';
 
   const formattedSize = `$${size.toLocaleString()}`;
@@ -40,10 +40,21 @@ export default function RulesCard({
   let profitTarget = 'No Target';
   if (isTwoStep) profitTarget = phase === 2 ? '5%' : '8%';
   else if (isOneStep) profitTarget = '10%';
+  else if (isPayoutLater) profitTarget = '8%';
   else if (isTrial) profitTarget = 'None';
 
-  const dailyDrawdown = '5%';
-  const maxDrawdown = '10%';
+  let dailyDrawdown = '5%';
+  let maxDrawdown = '10%';
+  if (isInstant) {
+    dailyDrawdown = size <= 3000 ? '0.5%' : '1%';
+    maxDrawdown = size <= 3000 ? '1%' : '2%';
+  } else if (isOneStep) {
+    dailyDrawdown = '4%';
+    maxDrawdown = '8%';
+  } else if (isPayoutLater) {
+    dailyDrawdown = '3%';
+    maxDrawdown = '6%';
+  }
 
   let leverage = '1:100';
   if (isInstant) leverage = '1:30';
@@ -53,15 +64,27 @@ export default function RulesCard({
   if (isTrial) profitSplit = '30%';
 
   const minHoldTime = isInstant
-    ? '2 Minutes (Permanent)'
+    ? '2 Minutes'
     : holdRuleUpgradePurchased 
       ? 'Removed (Addon Active)' 
       : '2 Minutes';
 
-  const cooldownRule = isInstant ? '10 Minutes' : 'None';
-  const dailyPayoutRule = isInstant ? 'Every 24 Hours' : 'Bi-Weekly';
-
-  const rulesList = [
+  const rulesList = isInstant ? [
+    { label: 'Profit Target', value: 'No Target', allowed: true },
+    { label: 'Daily Drawdown', value: dailyDrawdown, allowed: true },
+    { label: 'Maximum Drawdown', value: maxDrawdown, allowed: true },
+    { label: 'Profit Split', value: '80%', allowed: true },
+    { label: 'Maximum Leverage', value: '1:30', allowed: true },
+    { label: 'News Trading', value: 'Allowed', allowed: true },
+    { label: 'Weekend Holding', value: 'Allowed', allowed: true },
+    { label: 'Expert Advisors', value: 'Allowed', allowed: true },
+    { label: 'Hedging', value: 'Allowed', allowed: true },
+    { label: 'Copy Trading', value: 'Not Allowed', allowed: false },
+    { label: 'Minimum Hold Time', value: '2 Minutes', allowed: true },
+    { label: 'Warning Trigger', value: 'After 2 Minutes', allowed: true },
+    { label: 'Maximum Hold Time', value: '10 Minutes', allowed: true },
+    { label: '10 Minute Rule Violation', value: 'Instant Account Breach', allowed: false },
+  ] : [
     { label: 'Profit Target', value: profitTarget, allowed: true },
     { label: 'Daily Drawdown', value: dailyDrawdown, allowed: true },
     { label: 'Maximum Drawdown', value: maxDrawdown, allowed: true },
@@ -73,8 +96,8 @@ export default function RulesCard({
     { label: 'Hedging', value: 'Allowed', allowed: true },
     { label: 'Copy Trading', value: 'Not Allowed', allowed: false },
     { label: 'Minimum Hold Time', value: minHoldTime, allowed: true, highlight: !isInstant && holdRuleUpgradePurchased },
-    { label: 'Cooldown After Close', value: cooldownRule, allowed: true },
-    { label: 'Daily Payout', value: dailyPayoutRule, allowed: true },
+    { label: 'Cooldown After Close', value: 'None', allowed: true },
+    { label: 'Daily Payout', value: 'Bi-Weekly', allowed: true },
   ];
 
   return (

@@ -181,7 +181,7 @@ export default function LandingPage({
           },
           payout_later: {
             phases: "Single Phase (Discounted)",
-            profitTarget: "10% Phase 1",
+            profitTarget: "8% Phase 1",
             dailyDrawdown: "3% (Balance Based)",
             maxDrawdown: "6% Overall",
             minDays: "5 Trading Days",
@@ -192,14 +192,14 @@ export default function LandingPage({
           },
           instant_bolt: {
             phases: "Instant (No Phase)",
-            profitTarget: "No Profit Target",
-            dailyDrawdown: "4% (Balance Based)",
-            maxDrawdown: "5% Overall",
+            profitTarget: "No Target",
+            dailyDrawdown: "0.5% (2K/3K) / 1% (6K/9K)",
+            maxDrawdown: "1% (2K/3K) / 2% (6K/9K)",
             minDays: "0 Days",
             leverage: "1:30",
             feeStructure: "Direct Entry Fee",
             payoutInterval: "Same Day Payout",
-            customRules: "- Same Day Withdrawal\n- Profit Split: 80%\n- Immediate funded status (no evaluation phase)"
+            customRules: "⚡ Instant Bolt Rules:\n- Daily Drawdown: 0.5% (2K/3K) | 1% (6K/9K)\n- Max Drawdown: 1% (2K/3K) | 2% (6K/9K)\n- Profit Target: No Target\n- Profit Split: 80%\n- Max Leverage: 1:30\n- News Trading: Allowed\n- Weekend Holding: Allowed\n- Expert Advisors: Allowed\n- Hedging: Allowed\n- Copy Trading: Not Allowed\n⏱ Minimum Hold Time: 2 Minutes\n⚠ Warning Trigger: After 2 Minutes\n🚫 Maximum Hold Time: 10 Minutes\n❌ 10 Minute Rule Violation: Instant Account Breach"
           },
           trial: {
             phases: "15 Days Duration Trial",
@@ -901,7 +901,7 @@ export default function LandingPage({
                 <td className="p-6">4% (Balance Based)</td>
                 <td className="p-6">5% (Equity Based)</td>
                 <td className="p-6">3% (Balance Based)</td>
-                <td className="p-6">4% (Balance Based)</td>
+                <td className="p-6 text-amber-400 font-bold">0.5% (2K/3K) / 1% (6K/9K)</td>
                 <td className="p-6">5% (Equity Based)</td>
               </tr>
               <tr>
@@ -909,7 +909,7 @@ export default function LandingPage({
                 <td className="p-6">8% Overall</td>
                 <td className="p-6">10% Overall</td>
                 <td className="p-6">6% Overall</td>
-                <td className="p-6">5% Overall</td>
+                <td className="p-6 text-red-400 font-bold">1% (2K/3K) / 2% (6K/9K)</td>
                 <td className="p-6">10% Overall</td>
               </tr>
               <tr>

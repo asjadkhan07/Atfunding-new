@@ -8,7 +8,7 @@ import {
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { TradingAccount, UserProfile, PayoutRequest, Affiliate, Coupon, Trade, Order, PaymentSettings, AccountType, SocialLink, PaymentMethod, SupportTicket, TicketMessage, Announcement, Task, TaskSubmission, RewardStoreItem, RewardRedemption, CustomLink, ReferralWithdrawal, Certificate, CertificateTemplate } from '../types';
-import { CHALLENGE_PACKAGES } from '../constants';
+import { CHALLENGE_PACKAGES, getAccountDrawdownLimits } from '../constants';
 import { db, auth } from '../firebase';
 import { firebaseTelemetry } from '../firebaseTelemetry';
 import { updatePassword } from 'firebase/auth';
@@ -132,6 +132,12 @@ export default function AdminPanel() {
 
   // Selected Order for Modal
   const [selectedOrderForModal, setSelectedOrderForModal] = useState<Order | null>(null);
+
+  // Pending Review Modals State
+  const [reviewHistoryAccount, setReviewHistoryAccount] = useState<TradingAccount | null>(null);
+  const [reviewViolationsAccount, setReviewViolationsAccount] = useState<TradingAccount | null>(null);
+  const [reviewRejectAccount, setReviewRejectAccount] = useState<TradingAccount | null>(null);
+  const [reviewRejectReason, setReviewRejectReason] = useState<string>('');
 
   // Toast / Approval message
   const [approvalToast, setApprovalToast] = useState<string | null>(null);
@@ -1879,9 +1885,9 @@ export default function AdminPanel() {
           password: randomPassword,
           platform: 'ATTerminal',
           server: 'ATFunding-LiveServer',
-          profitTarget: order.accountType === 'two_step' ? sizeVal * 0.08 : order.accountType === 'one_step' ? sizeVal * 0.10 : order.accountType === 'payout_later' ? sizeVal * 0.10 : 0,
-          dailyDrawdownLimit: order.accountType === 'two_step' ? sizeVal * 0.05 : order.accountType === 'one_step' ? sizeVal * 0.04 : order.accountType === 'payout_later' ? sizeVal * 0.03 : sizeVal * 0.04,
-          maxDrawdownLimit: order.accountType === 'two_step' ? sizeVal * 0.10 : order.accountType === 'one_step' ? sizeVal * 0.08 : order.accountType === 'payout_later' ? sizeVal * 0.06 : sizeVal * 0.05,
+          profitTarget: order.accountType === 'two_step' ? sizeVal * 0.08 : order.accountType === 'one_step' ? sizeVal * 0.10 : order.accountType === 'payout_later' ? sizeVal * 0.08 : 0,
+          dailyDrawdownLimit: getAccountDrawdownLimits(order.accountType, sizeVal).dailyDrawdownLimit,
+          maxDrawdownLimit: getAccountDrawdownLimits(order.accountType, sizeVal).maxDrawdownLimit,
           expiresAt: expiresAt,
           createdAt: new Date().toISOString()
         };
@@ -4593,7 +4599,7 @@ export default function AdminPanel() {
                           setGiveawayType(type);
                           // Reset sizes based on type
                           if (type === 'trial') setGiveawaySize(1000);
-                          else if (type === 'instant_bolt') setGiveawaySize(1500);
+                          else if (type === 'instant_bolt') setGiveawaySize(2000);
                           else setGiveawaySize(5000);
                         }}
                         className="w-full h-10 bg-black/30 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-blue-500"
@@ -4617,7 +4623,7 @@ export default function AdminPanel() {
                           <option value="1000">$1,000 (AT Trial)</option>
                         ) : giveawayType === 'instant_bolt' ? (
                           <>
-                            <option value="1500">$1,500 (ATF Instant)</option>
+                            <option value="2000">$2,000 (ATF Instant)</option>
                             <option value="3000">$3,000 (ATF Instant)</option>
                             <option value="6000">$6,000 (ATF Instant)</option>
                             <option value="9000">$9,000 (ATF Instant)</option>
@@ -5003,208 +5009,256 @@ export default function AdminPanel() {
                 <div>
                   <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center gap-2">
                     <Award className="w-5 h-5 text-amber-400" />
-                    <span>Challenge Reviews & Phase Approval Workflow</span>
+                    <span>Pending Challenge Reviews & Manual Audit Panel</span>
                   </h3>
-                  <p className="text-xs text-slate-400 mt-1">Audit trader evaluation performance and promote qualified traders to Phase 2 or Funded Accounts.</p>
+                  <p className="text-xs text-slate-400 mt-1">Audit trader evaluation performance, inspect trade histories and rule violations, and approve or reject accounts.</p>
                 </div>
                 <div className="flex gap-2 font-mono text-xs">
-                  <span className="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 font-bold">
-                    {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').length} Pending Reviews
+                  <span className="px-3.5 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 font-bold flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    <span>
+                      {accounts.filter(a => 
+                        a.status === 'pending_review' || 
+                        a.status === 'Pending Review' || 
+                        a.status === 'phase2_pending' || 
+                        a.status === 'funded_pending' || 
+                        a.status === 'Pending Approval' || 
+                        a.status === 'passed_phase1' || 
+                        a.status === 'passed_phase2' || 
+                        a.phaseStatus === 'phase2_pending' || 
+                        a.phaseStatus === 'funded_pending'
+                      ).length} Pending Reviews
+                    </span>
                   </span>
                 </div>
               </div>
 
-              {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').length === 0 ? (
-                <div className="py-16 text-center text-xs text-slate-500">
-                  <Award className="w-10 h-10 mx-auto text-slate-600 mb-3 opacity-50" />
-                  <p>No challenge accounts currently pending phase evaluation audit.</p>
+              {accounts.filter(a => 
+                a.status === 'pending_review' || 
+                a.status === 'Pending Review' || 
+                a.status === 'phase2_pending' || 
+                a.status === 'funded_pending' || 
+                a.status === 'Pending Approval' || 
+                a.status === 'passed_phase1' || 
+                a.status === 'passed_phase2' || 
+                a.phaseStatus === 'phase2_pending' || 
+                a.phaseStatus === 'funded_pending'
+              ).length === 0 ? (
+                <div className="py-16 text-center text-xs text-slate-500 space-y-2">
+                  <Award className="w-12 h-12 mx-auto text-slate-600 opacity-40" />
+                  <p className="font-bold text-slate-400 text-sm">No Pending Account Reviews</p>
+                  <p className="text-slate-500">All challenge evaluations and phase promotions have been processed.</p>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs text-slate-300">
                     <thead>
                       <tr className="border-b border-white/10 font-mono uppercase text-slate-400 text-[10px]">
-                        <th className="py-3 px-3">Account ID</th>
-                        <th className="py-3 px-3">User Email</th>
-                        <th className="py-3 px-3">Type & Size</th>
-                        <th className="py-3 px-3">Current Balance</th>
-                        <th className="py-3 px-3">Profit Target</th>
-                        <th className="py-3 px-3">Phase Status</th>
-                        <th className="py-3 px-3 text-right">Phase Actions</th>
+                        <th className="py-3 px-3">Trader Name & Login</th>
+                        <th className="py-3 px-3">Challenge Type</th>
+                        <th className="py-3 px-3">Account Size</th>
+                        <th className="py-3 px-3">Profit & Gain %</th>
+                        <th className="py-3 px-3">Rule Violations</th>
+                        <th className="py-3 px-3">Trading History</th>
+                        <th className="py-3 px-3 text-right">Review Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/10 font-medium">
-                      {accounts.filter(a => a.status === 'phase2_pending' || a.status === 'funded_pending' || a.status === 'Pending Review' || a.status === 'Pending Approval' || a.status === 'passed_phase1' || a.phaseStatus === 'phase2_pending' || a.phaseStatus === 'funded_pending').map((acc) => {
-                        const profit = acc.balance - acc.startingBalance;
-                        const isPhase1Pending = acc.status === 'phase2_pending' || acc.phaseStatus === 'phase2_pending' || (acc.phase === 1 && acc.status === 'passed_phase1');
-                        const isPhase2Pending = acc.status === 'funded_pending' || acc.phaseStatus === 'funded_pending' || (acc.phase === 2 && acc.status === 'passed_phase2');
+                      {accounts.filter(a => 
+                        a.status === 'pending_review' || 
+                        a.status === 'Pending Review' || 
+                        a.status === 'phase2_pending' || 
+                        a.status === 'funded_pending' || 
+                        a.status === 'Pending Approval' || 
+                        a.status === 'passed_phase1' || 
+                        a.status === 'passed_phase2' || 
+                        a.phaseStatus === 'phase2_pending' || 
+                        a.phaseStatus === 'funded_pending'
+                      ).map((acc) => {
+                        const userObj = users.find(u => u.uid === acc.userId || u.id === acc.userId || u.email === acc.userEmail);
+                        const traderName = acc.userName || userObj?.displayName || userObj?.name || userObj?.email?.split('@')[0] || 'Trader';
+                        const startBal = acc.startingBalance || acc.size || 10000;
+                        const profit = acc.balance - startBal;
+                        const profitPct = startBal > 0 ? ((profit / startBal) * 100).toFixed(2) : '0.00';
+
+                        const accViolations = ruleViolations.filter(v => v.accountId === acc.id || v.login === acc.login || v.userId === acc.userId);
+                        const accTrades = trades.filter(t => t.accountId === acc.id || t.userId === acc.userId);
+
+                        let challengeLabel = '1-Step Challenge';
+                        if (acc.accountType === 'two_step') {
+                          if (acc.status === 'phase2_pending' || acc.phaseStatus === 'phase2_pending' || acc.phase === 1) {
+                            challengeLabel = '2-Step Phase 1';
+                          } else {
+                            challengeLabel = '2-Step Phase 2';
+                          }
+                        } else if (acc.accountType === 'payout_later') {
+                          challengeLabel = 'Payout Later';
+                        } else if (acc.accountType === 'one_step') {
+                          challengeLabel = '1-Step Challenge';
+                        }
 
                         return (
-                          <tr key={acc.id} className="hover:bg-white/[0.02]">
-                            <td className="py-3 px-3 font-mono font-bold text-white">{acc.login || acc.id}</td>
-                            <td className="py-3 px-3 text-slate-300">{acc.userEmail || acc.userId}</td>
-                            <td className="py-3 px-3 capitalize font-mono text-slate-300">
-                              {acc.accountType.replace('_', ' ')} (${acc.size ? acc.size.toLocaleString() : acc.startingBalance.toLocaleString()})
+                          <tr key={acc.id} className="hover:bg-white/[0.02] transition-colors">
+                            <td className="py-3 px-3 space-y-0.5">
+                              <span className="font-bold text-white block">{traderName}</span>
+                              <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-400">
+                                <span>Login: {acc.login || acc.id}</span>
+                                <span>•</span>
+                                <span className="text-slate-500 truncate max-w-[140px]">{acc.userEmail || userObj?.email}</span>
+                              </div>
                             </td>
-                            <td className="py-3 px-3 font-mono text-emerald-400 font-bold">
-                              ${acc.balance.toLocaleString()}
-                              <span className="text-[10px] text-emerald-500 font-normal block">(+${profit.toFixed(2)})</span>
+                            <td className="py-3 px-3 font-mono text-slate-200">
+                              <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-500/10 text-blue-300 border border-blue-500/20 uppercase">
+                                {challengeLabel}
+                              </span>
                             </td>
-                            <td className="py-3 px-3 font-mono text-slate-400">
-                              ${acc.profitTarget ? acc.profitTarget.toLocaleString() : 'N/A'}
+                            <td className="py-3 px-3 font-mono font-bold text-white">
+                              ${startBal.toLocaleString()}
+                            </td>
+                            <td className="py-3 px-3 font-mono">
+                              <div className={`font-bold ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {profit >= 0 ? '+' : ''}${profit.toFixed(2)}
+                              </div>
+                              <div className={`text-[10px] ${profit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                ({profit >= 0 ? '+' : ''}{profitPct}%)
+                              </div>
                             </td>
                             <td className="py-3 px-3">
-                              {isPhase1Pending ? (
-                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase animate-pulse">
-                                  Phase 1 Passed → Phase 2 Pending
-                                </span>
-                              ) : isPhase2Pending ? (
-                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 uppercase animate-pulse">
-                                  Phase 2 Passed → Funded Pending
-                                </span>
-                              ) : (
-                                <span className="px-2.5 py-1 rounded-full text-[9px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 uppercase">
-                                  {acc.status} (Phase {acc.phase})
-                                </span>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => setReviewViolationsAccount(acc)}
+                                className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-bold border flex items-center gap-1 cursor-pointer transition-colors ${
+                                  accViolations.length > 0 
+                                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 hover:bg-rose-500/30' 
+                                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                                }`}
+                              >
+                                <AlertTriangle className="w-3 h-3" />
+                                <span>{accViolations.length} Violations</span>
+                              </button>
+                            </td>
+                            <td className="py-3 px-3">
+                              <button
+                                type="button"
+                                onClick={() => setReviewHistoryAccount(acc)}
+                                className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <FileText className="w-3 h-3 text-blue-400" />
+                                <span>{accTrades.length} Trades</span>
+                              </button>
                             </td>
                             <td className="py-3 px-3 text-right space-x-2">
-                              {isPhase1Pending ? (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    try {
-                                      const newPhase2Target = acc.startingBalance * 0.05;
+                              {/* Approve Button */}
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    const nowIso = new Date().toISOString();
+                                    const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                                    const recipientEmail = acc.userEmail || userObj?.email || '';
+
+                                    if (challengeLabel === '2-Step Phase 1') {
+                                      const phase2Target = startBal * 0.05;
                                       await updateDoc(doc(db, 'accounts', acc.id), {
                                         phase: 2,
                                         status: 'active',
                                         phaseStatus: 'phase2_active',
-                                        balance: acc.startingBalance,
-                                        equity: acc.startingBalance,
-                                        dailyStartingBalance: acc.startingBalance,
-                                        dailyStartingEquity: acc.startingBalance,
-                                        profitTarget: newPhase2Target,
-                                        approvedAt: new Date().toISOString()
+                                        balance: startBal,
+                                        equity: startBal,
+                                        dailyStartingBalance: startBal,
+                                        dailyStartingEquity: startBal,
+                                        profitTarget: phase2Target,
+                                        approvedAt: nowIso
                                       });
 
-                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
                                       await setDoc(doc(db, 'notifications', notifId), {
                                         id: notifId,
                                         userId: acc.userId,
-                                        title: 'Phase 2 Account Approved! 🎉',
-                                        message: `Congratulations! Your Phase 1 performance was verified by the Admin team. Account #${acc.login || acc.id} is now active in Phase 2 Evaluation. Target: 5% ($${newPhase2Target.toLocaleString()}).`,
+                                        title: 'Phase 2 Unlocked! 🎉',
+                                        message: `Congratulations! Your Phase 1 performance on Account #${acc.login || acc.id} was verified and approved by Admin. Phase 2 is now active!`,
                                         type: 'success',
                                         read: false,
-                                        createdAt: new Date().toISOString()
+                                        createdAt: nowIso
                                       });
 
-                                      alert(`Phase 2 approved successfully for Account #${acc.login || acc.id}! Account is now active in Phase 2.`);
-                                      fetchAllData();
-                                    } catch (err: any) {
-                                      console.error("Failed to approve Phase 2:", err);
-                                      alert("Error approving Phase 2: " + err.message);
-                                    }
-                                  }}
-                                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-full text-[10px] transition-colors uppercase tracking-wider shadow-md shadow-amber-500/20"
-                                >
-                                  Approve Phase 2
-                                </button>
-                              ) : isPhase2Pending ? (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    try {
+                                      if (recipientEmail) {
+                                        const qId = `queue-appr-${Date.now()}`;
+                                        await setDoc(doc(db, 'email_queue', qId), {
+                                          id: qId,
+                                          recipient: recipientEmail,
+                                          subject: 'ATFunding - Phase 2 Unlocked! 🎉',
+                                          message: `Hello ${traderName},\n\nGreat news! Your Phase 1 evaluation for Account #${acc.login || acc.id} has been approved by our risk management team.\n\nYour Phase 2 Evaluation is now ACTIVE! Target: 5% ($${phase2Target.toLocaleString()}).\n\nATFunding Team`,
+                                          createdAt: nowIso,
+                                          status: 'pending'
+                                        });
+                                      }
+
+                                      alert(`Phase 2 unlocked successfully for Account #${acc.login || acc.id}! Notification & email sent.`);
+
+                                    } else if (challengeLabel === '2-Step Phase 2' || challengeLabel === '1-Step Challenge' || challengeLabel === 'Payout Later') {
                                       await updateDoc(doc(db, 'accounts', acc.id), {
                                         phase: 3,
                                         accountType: 'funded',
                                         status: 'active',
                                         phaseStatus: 'funded',
-                                        balance: acc.startingBalance,
-                                        equity: acc.startingBalance,
-                                        dailyStartingBalance: acc.startingBalance,
-                                        dailyStartingEquity: acc.startingBalance,
+                                        balance: startBal,
+                                        equity: startBal,
+                                        dailyStartingBalance: startBal,
+                                        dailyStartingEquity: startBal,
                                         profitTarget: 0,
-                                        approvedAt: new Date().toISOString()
+                                        approvedAt: nowIso
                                       });
 
-                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
                                       await setDoc(doc(db, 'notifications', notifId), {
                                         id: notifId,
                                         userId: acc.userId,
-                                        title: 'Funded Account Approved & Unlocked! 🎉',
-                                        message: `Congratulations! Your evaluation is complete! Account #${acc.login || acc.id} is now an official Funded Account. Payout request section is now unlocked!`,
+                                        title: 'Live Funded Account Approved! 🏆',
+                                        message: `Congratulations! Your evaluation for Account #${acc.login || acc.id} was verified and approved! You are now an official Funded Trader. Payout request section unlocked!`,
                                         type: 'success',
                                         read: false,
-                                        createdAt: new Date().toISOString()
+                                        createdAt: nowIso
                                       });
+
+                                      if (recipientEmail) {
+                                        const qId = `queue-appr-${Date.now()}`;
+                                        await setDoc(doc(db, 'email_queue', qId), {
+                                          id: qId,
+                                          recipient: recipientEmail,
+                                          subject: 'ATFunding - Live Funded Account Issued! 🏆',
+                                          message: `Hello ${traderName},\n\nCongratulations! Your review for Account #${acc.login || acc.id} has been officially APPROVED by our management team.\n\nYour live Funded Account ($${startBal.toLocaleString()}) is now active! The payout withdrawal section is now unlocked on your dashboard.\n\nWelcome to ATFunding!`,
+                                          createdAt: nowIso,
+                                          status: 'pending'
+                                        });
+                                      }
 
                                       alert(`Funded Account approved successfully for Account #${acc.login || acc.id}! Payout section unlocked.`);
-                                      fetchAllData();
-                                    } catch (err: any) {
-                                      console.error("Failed to approve Funded Account:", err);
-                                      alert("Error approving Funded Account: " + err.message);
-                                    }
-                                  }}
-                                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-full text-[10px] transition-colors uppercase tracking-wider shadow-md shadow-emerald-500/20"
-                                >
-                                  Approve Funded Account
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    try {
-                                      const nextPhase = acc.phase + 1;
+
+                                    } else {
                                       await updateDoc(doc(db, 'accounts', acc.id), {
-                                        phase: nextPhase,
                                         status: 'active',
-                                        phaseStatus: nextPhase === 2 ? 'phase2_active' : 'funded',
-                                        balance: acc.startingBalance,
-                                        equity: acc.startingBalance,
-                                        dailyStartingBalance: acc.startingBalance,
-                                        dailyStartingEquity: acc.startingBalance,
-                                        approvedAt: new Date().toISOString()
+                                        approvedAt: nowIso
                                       });
-
-                                      const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
-                                      await setDoc(doc(db, 'notifications', notifId), {
-                                        id: notifId,
-                                        userId: acc.userId,
-                                        title: `Phase ${nextPhase} Approved! 🎉`,
-                                        message: `Congratulations! Your account #${acc.login || acc.id} has been approved by the Admin team for Phase ${nextPhase}.`,
-                                        type: 'success',
-                                        read: false,
-                                        createdAt: new Date().toISOString()
-                                      });
-
-                                      alert(`Successfully promoted account ${acc.id} to Phase ${nextPhase}!`);
-                                      fetchAllData();
-                                    } catch (err: any) {
-                                      console.error("Failed to approve phase:", err);
-                                      alert("Error approving phase: " + err.message);
+                                      alert(`Account ${acc.login || acc.id} approved.`);
                                     }
-                                  }}
-                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-full text-[10px] transition-colors"
-                                >
-                                  Approve Phase {acc.phase + 1}
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const reason = prompt("Enter rejection reason:") || "Risk parameters or trading rule non-compliance.";
-                                  try {
-                                    await updateDoc(doc(db, 'accounts', acc.id), {
-                                      status: 'breached',
-                                      rejectionReason: reason
-                                    });
-                                    alert(`Account ${acc.id} rejected.`);
+
                                     fetchAllData();
                                   } catch (err: any) {
-                                    alert("Error rejecting account: " + err.message);
+                                    alert("Approval Error: " + err.message);
                                   }
                                 }}
-                                className="px-3 py-1.5 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white border border-red-600/20 rounded-full text-[10px] transition-colors"
+                                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-full text-[10px] transition-colors uppercase tracking-wider shadow-md shadow-emerald-500/20 cursor-pointer"
+                              >
+                                Approve
+                              </button>
+
+                              {/* Reject Button */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReviewRejectAccount(acc);
+                                  setReviewRejectReason('');
+                                }}
+                                className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40 rounded-full text-[10px] font-extrabold transition-colors uppercase tracking-wider cursor-pointer"
                               >
                                 Reject
                               </button>
@@ -5214,6 +5268,237 @@ export default function AdminPanel() {
                       })}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {/* MODAL: REJECTION REASON (REQUIRED FIELD) */}
+              {reviewRejectAccount && (
+                <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+                  <div className="bg-slate-900 border border-rose-500/30 rounded-3xl p-6 max-w-md w-full space-y-5 shadow-2xl animate-fade-in">
+                    <div className="flex justify-between items-center border-b border-white/10 pb-3">
+                      <div className="flex items-center gap-2 text-rose-400">
+                        <AlertTriangle className="w-5 h-5" />
+                        <h3 className="text-sm font-bold text-white uppercase tracking-wider">Reject Account Review</h3>
+                      </div>
+                      <button onClick={() => setReviewRejectAccount(null)} className="text-slate-400 hover:text-white">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-3 text-xs text-slate-300">
+                      <p className="leading-relaxed">
+                        Specify the reason for rejecting Account <span className="text-white font-bold font-mono">#{reviewRejectAccount.login || reviewRejectAccount.id}</span>.
+                      </p>
+                      <div className="p-3 bg-white/5 border border-white/10 rounded-2xl space-y-1 font-mono text-[11px]">
+                        <div>User: <span className="text-white font-bold">{reviewRejectAccount.userEmail || reviewRejectAccount.userId}</span></div>
+                        <div>Size: <span className="text-emerald-400 font-bold">${reviewRejectAccount.startingBalance?.toLocaleString()}</span></div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+                          Rejection Reason <span className="text-rose-400">* Required</span>
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={reviewRejectReason}
+                          onChange={(e) => setReviewRejectReason(e.target.value)}
+                          placeholder="e.g. Non-compliance with risk guidelines: hold time limit exceeded or copy trading detected."
+                          className="w-full bg-slate-950 border border-white/15 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500 transition-colors"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setReviewRejectAccount(null)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-full text-xs font-bold transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!reviewRejectReason.trim()) {
+                            alert("Rejection reason is required before rejecting an account.");
+                            return;
+                          }
+
+                          try {
+                            const nowIso = new Date().toISOString();
+                            const acc = reviewRejectAccount;
+                            const reasonText = reviewRejectReason.trim();
+
+                            await updateDoc(doc(db, 'accounts', acc.id), {
+                              status: 'rejected',
+                              rejectionReason: reasonText,
+                              breachReason: reasonText,
+                              rejectedAt: nowIso
+                            });
+
+                            // Dashboard notification
+                            const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+                            await setDoc(doc(db, 'notifications', notifId), {
+                              id: notifId,
+                              userId: acc.userId,
+                              title: 'Account Review Rejected ❌',
+                              message: `Your review for Account #${acc.login || acc.id} was rejected. Reason: ${reasonText}`,
+                              type: 'error',
+                              read: false,
+                              createdAt: nowIso
+                            });
+
+                            // Queue email
+                            const userEmail = acc.userEmail || '';
+                            if (userEmail) {
+                              const qId = `queue-rej-${Date.now()}`;
+                              await setDoc(doc(db, 'email_queue', qId), {
+                                id: qId,
+                                recipient: userEmail,
+                                subject: `ATFunding - Account Review Update: Rejected`,
+                                message: `Hello Trader,\n\nYour review for Account #${acc.login || acc.id} has been rejected during audit.\n\nRejection Reason:\n${reasonText}\n\nIf you have any questions, please contact ATFunding support.\n\nATFunding Compliance Team`,
+                                createdAt: nowIso,
+                                status: 'pending'
+                              });
+                            }
+
+                            alert(`Account #${acc.login || acc.id} review rejected. Trader notified via email and dashboard.`);
+                            setReviewRejectAccount(null);
+                            setReviewRejectReason('');
+                            fetchAllData();
+                          } catch (err: any) {
+                            alert("Rejection Error: " + err.message);
+                          }
+                        }}
+                        className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-full text-xs shadow-lg shadow-rose-600/20 transition-colors"
+                      >
+                        Confirm Rejection
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: TRADING HISTORY */}
+              {reviewHistoryAccount && (
+                <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+                  <div className="bg-slate-900 border border-white/10 rounded-3xl p-6 max-w-3xl w-full space-y-5 shadow-2xl max-h-[85vh] flex flex-col">
+                    <div className="flex justify-between items-center border-b border-white/10 pb-3">
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-blue-400" />
+                        <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                          Trading History — Account #{reviewHistoryAccount.login || reviewHistoryAccount.id}
+                        </h3>
+                      </div>
+                      <button onClick={() => setReviewHistoryAccount(null)} className="text-slate-400 hover:text-white">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <div className="overflow-y-auto flex-1 space-y-3 pr-1">
+                      {trades.filter(t => t.accountId === reviewHistoryAccount.id || t.userId === reviewHistoryAccount.userId).length === 0 ? (
+                        <p className="text-center py-10 text-xs text-slate-500">No executed trades logged for this account.</p>
+                      ) : (
+                        <table className="w-full text-left text-xs text-slate-300">
+                          <thead>
+                            <tr className="border-b border-white/10 font-mono uppercase text-slate-400 text-[10px]">
+                              <th className="py-2 px-2">Symbol</th>
+                              <th className="py-2 px-2">Type</th>
+                              <th className="py-2 px-2">Lots</th>
+                              <th className="py-2 px-2">Open Price</th>
+                              <th className="py-2 px-2">Close Price</th>
+                              <th className="py-2 px-2">Profit ($)</th>
+                              <th className="py-2 px-2">Hold Time</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5 font-mono text-[11px]">
+                            {trades.filter(t => t.accountId === reviewHistoryAccount.id || t.userId === reviewHistoryAccount.userId).map((t, idx) => {
+                              const openTime = t.openTime ? new Date(t.openTime).getTime() : 0;
+                              const closeTime = t.closeTime ? new Date(t.closeTime).getTime() : Date.now();
+                              const holdMins = openTime > 0 ? Math.round((closeTime - openTime) / 60000) : 0;
+
+                              return (
+                                <tr key={t.id || idx} className="hover:bg-white/[0.02]">
+                                  <td className="py-2 px-2 font-bold text-white">{t.symbol}</td>
+                                  <td className="py-2 px-2">
+                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${t.type === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                                      {t.type}
+                                    </span>
+                                  </td>
+                                  <td className="py-2 px-2 text-slate-300">{t.amount || t.lots || 0.1}</td>
+                                  <td className="py-2 px-2 text-slate-400">${t.openPrice?.toFixed(2) || 'N/A'}</td>
+                                  <td className="py-2 px-2 text-slate-400">${t.closePrice?.toFixed(2) || 'N/A'}</td>
+                                  <td className={`py-2 px-2 font-bold ${(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {(t.profit || 0) >= 0 ? '+' : ''}${(t.profit || 0).toFixed(2)}
+                                  </td>
+                                  <td className="py-2 px-2 text-slate-400">
+                                    {holdMins} min{holdMins !== 1 ? 's' : ''}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+
+                    <div className="flex justify-end pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setReviewHistoryAccount(null)}
+                        className="px-5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold transition-colors"
+                      >
+                        Close History
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* MODAL: RULE VIOLATIONS */}
+              {reviewViolationsAccount && (
+                <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+                  <div className="bg-slate-900 border border-white/10 rounded-3xl p-6 max-w-xl w-full space-y-5 shadow-2xl">
+                    <div className="flex justify-between items-center border-b border-white/10 pb-3">
+                      <div className="flex items-center gap-2 text-rose-400">
+                        <AlertTriangle className="w-5 h-5" />
+                        <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                          Rule Violations — Account #{reviewViolationsAccount.login || reviewViolationsAccount.id}
+                        </h3>
+                      </div>
+                      <button onClick={() => setReviewViolationsAccount(null)} className="text-slate-400 hover:text-white">
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {ruleViolations.filter(v => v.accountId === reviewViolationsAccount.id || v.login === reviewViolationsAccount.login || v.userId === reviewViolationsAccount.userId).length === 0 ? (
+                        <div className="p-6 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-center text-xs text-emerald-300">
+                          ✅ Perfect Compliance! No rule violations or risk warnings detected on this account.
+                        </div>
+                      ) : (
+                        ruleViolations.filter(v => v.accountId === reviewViolationsAccount.id || v.login === reviewViolationsAccount.login || v.userId === reviewViolationsAccount.userId).map((v, i) => (
+                          <div key={v.id || i} className="p-3.5 bg-slate-950 border border-rose-500/20 rounded-2xl text-xs space-y-1">
+                            <div className="flex justify-between items-center font-mono">
+                              <span className="font-bold text-rose-300 uppercase">{v.ruleName || v.type || 'Rule Violation'}</span>
+                              <span className="text-[10px] text-slate-500">{v.timestamp || v.createdAt ? new Date(v.timestamp || v.createdAt).toLocaleString() : 'Recent'}</span>
+                            </div>
+                            <p className="text-slate-300 text-[11px] leading-relaxed">{v.details || v.reason || v.message || 'Violation detected during trading session.'}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="flex justify-end pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setReviewViolationsAccount(null)}
+                        className="px-5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold transition-colors"
+                      >
+                        Close Violations
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
