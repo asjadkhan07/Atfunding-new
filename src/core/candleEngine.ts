@@ -223,20 +223,55 @@ export type SubPhase = 'TrendLeg' | 'Pullback' | 'Continuation' | 'Consolidation
 
 export type PatternType = 'NORMAL' | 'PIN_BAR' | 'ENGULFING' | 'INDECISION' | 'LIQUIDITY_SWEEP';
 
+export const SYMBOL_CANDLE_SPECS: Record<string, {
+  pipValue: number;       // Price value of 1 pip
+  minPips: number;        // Minimum 1m candle range in pips
+  maxPips: number;        // Maximum 1m candle range in pips
+  avgPips: number;        // Typical 1m candle range in pips
+  breakoutPips: number;   // Breakout 1m candle range in pips
+}> = {
+  // EURUSD: 1-15 pips per candle (0.00010 to 0.00150)
+  EURUSD: { pipValue: 0.0001,  minPips: 1,  maxPips: 15, avgPips: 4,  breakoutPips: 12 },
+  GBPUSD: { pipValue: 0.0001,  minPips: 1.5,maxPips: 20, avgPips: 5,  breakoutPips: 16 },
+  AUDUSD: { pipValue: 0.0001,  minPips: 1,  maxPips: 15, avgPips: 3.5,breakoutPips: 11 },
+  NZDUSD: { pipValue: 0.0001,  minPips: 1,  maxPips: 14, avgPips: 3.5,breakoutPips: 10 },
+  USDCAD: { pipValue: 0.0001,  minPips: 1,  maxPips: 15, avgPips: 4,  breakoutPips: 12 },
+  USDCHF: { pipValue: 0.0001,  minPips: 1,  maxPips: 15, avgPips: 3.8,breakoutPips: 11 },
+  EURGBP: { pipValue: 0.0001,  minPips: 0.8,maxPips: 12, avgPips: 3,  breakoutPips: 9  },
+
+  // JPY Crosses: 1-30 pips
+  USDJPY: { pipValue: 0.01,    minPips: 1,  maxPips: 25, avgPips: 6,  breakoutPips: 18 },
+  EURJPY: { pipValue: 0.01,    minPips: 1.5,maxPips: 28, avgPips: 7,  breakoutPips: 20 },
+  GBPJPY: { pipValue: 0.01,    minPips: 2,  maxPips: 32, avgPips: 9,  breakoutPips: 24 },
+
+  // XAUUSD (Gold): 5-50 pips per candle ($0.50 to $5.00)
+  XAUUSD: { pipValue: 0.10,    minPips: 5,  maxPips: 50, avgPips: 18, breakoutPips: 42 },
+  XAGUSD: { pipValue: 0.01,    minPips: 3,  maxPips: 35, avgPips: 12, breakoutPips: 28 },
+
+  // Energies
+  USOIL:  { pipValue: 0.01,    minPips: 2,  maxPips: 30, avgPips: 8,  breakoutPips: 22 },
+  UKOIL:  { pipValue: 0.01,    minPips: 2,  maxPips: 30, avgPips: 8,  breakoutPips: 22 },
+
+  // Indices
+  NAS100: { pipValue: 1.0,     minPips: 3,  maxPips: 55, avgPips: 14, breakoutPips: 40 },
+  US30:   { pipValue: 1.0,     minPips: 5,  maxPips: 75, avgPips: 18, breakoutPips: 55 },
+  SPX500: { pipValue: 1.0,     minPips: 1,  maxPips: 18, avgPips: 4.5,breakoutPips: 14 },
+
+  // Crypto
+  BTCUSD: { pipValue: 1.0,     minPips: 10, maxPips: 180,avgPips: 45, breakoutPips: 140 },
+  ETHUSD: { pipValue: 1.0,     minPips: 1,  maxPips: 18, avgPips: 4.5,breakoutPips: 14 },
+};
+
 export function getMaxConsecutiveCandles(symbol: string): number {
   if (symbol === 'XAUUSD' || symbol === 'XAGUSD') {
-    // Gold/Metals: 3-6 candles maximum before pullback
     return 3 + Math.floor(Math.random() * 4);
   }
   if (symbol === 'BTCUSD' || symbol === 'ETHUSD') {
-    // Crypto: 2-10 candles maximum before pullback
     return 2 + Math.floor(Math.random() * 9);
   }
   if (symbol === 'NAS100' || symbol === 'US30' || symbol === 'SPX500') {
-    // Indices: 3-8 candles maximum before pullback
     return 3 + Math.floor(Math.random() * 6);
   }
-  // Forex & Energy: 3-7 candles maximum before pullback
   return 3 + Math.floor(Math.random() * 5);
 }
 
@@ -305,7 +340,6 @@ function createTrendEngineManager(initialDir?: number, symbol: string = 'EURUSD'
     initial.state = initialDir === 1 ? 'Trending Up' : 'Trending Down';
   }
 
-  // Market structure rule: Consolidation before trend/breakout moves
   let initialSub: SubPhase = 'Consolidation';
   let initialSubDur = 2 + Math.floor(Math.random() * 4);
   if (initial.state === 'Range') {
@@ -315,7 +349,8 @@ function createTrendEngineManager(initialDir?: number, symbol: string = 'EURUSD'
 
   const maxLimit = getMaxConsecutiveCandles(symbol);
   const baseMid = BASE_MID_PRICES[symbol] || 1.1400;
-  const rangeBound = baseMid * 0.0015;
+  const spec = SYMBOL_CANDLE_SPECS[symbol] || SYMBOL_CANDLE_SPECS.EURUSD;
+  const rangeBound = spec.avgPips * 12 * spec.pipValue;
 
   return {
     state: initial.state,
@@ -362,14 +397,12 @@ function getNextCandleConfig(
     mgr.trendLegExtremumPrice = currentPrice;
   }
 
-  // Track move extremum
   if (mgr.mainDirection === 1) {
     if (currentPrice > mgr.trendLegExtremumPrice) mgr.trendLegExtremumPrice = currentPrice;
   } else if (mgr.mainDirection === -1) {
     if (currentPrice < mgr.trendLegExtremumPrice || mgr.trendLegExtremumPrice === 0) mgr.trendLegExtremumPrice = currentPrice;
   }
 
-  // 1. Regime transition
   if (mgr.candlesInState >= mgr.stateDuration) {
     const next = selectNextMarketState(mgr.state, mgr.mainDirection !== 0 ? mgr.mainDirection : 1);
     mgr.state = next.state;
@@ -383,39 +416,37 @@ function getNextCandleConfig(
     mgr.trendLegExtremumPrice = currentPrice;
     mgr.retraceTargetPrice = null;
 
-    // Structural level updating
     const baseMid = BASE_MID_PRICES[symbol] || currentPrice;
-    const rangeBound = baseMid * 0.0016;
+    const spec = SYMBOL_CANDLE_SPECS[symbol] || SYMBOL_CANDLE_SPECS.EURUSD;
+    const rangeBound = spec.avgPips * 10 * spec.pipValue;
     mgr.rangeMidPrice = currentPrice;
     mgr.supportLevel = currentPrice - rangeBound;
     mgr.resistanceLevel = currentPrice + rangeBound;
 
     if (mgr.state === 'Trending Up' || mgr.state === 'Trending Down') {
-      // Require consolidation phase before trend leg starts
       mgr.subPhase = 'Consolidation';
-      mgr.subPhaseDuration = 2 + Math.floor(Math.random() * 3); // 2 to 4 consolidation candles before trend
+      mgr.subPhaseDuration = 2 + Math.floor(Math.random() * 3);
     } else if (mgr.state === 'Range') {
       mgr.subPhase = 'Consolidation';
       mgr.subPhaseDuration = mgr.stateDuration;
     } else {
       mgr.subPhase = 'Consolidation';
-      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4); // Consolidation before breakout
+      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
     }
   }
 
-  // 2. FORCE PULLBACK IF MAX SAME COLOR CANDLE LIMIT REACHED (3-7 Forex, 3-6 Gold, 2-10 Crypto, 3-8 Indices)
   let forcePullback = false;
   if (mgr.consecutiveSameColorCount >= mgr.maxSameColorLimit && (mgr.state === 'Trending Up' || mgr.state === 'Trending Down' || mgr.state === 'Breakout')) {
     forcePullback = true;
     mgr.subPhase = 'Pullback';
     mgr.subPhaseCandles = 0;
-    mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3); // 1 to 3 pullback candles
+    mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
     mgr.consecutiveSameColorCount = 0;
     mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
 
     const legMagnitude = Math.abs(mgr.trendLegExtremumPrice - mgr.trendLegStartPrice);
     if (legMagnitude > 0) {
-      const retraceRatio = 0.20 + Math.random() * 0.40; // 20% to 60% retrace
+      const retraceRatio = 0.20 + Math.random() * 0.40;
       const retraceDist = legMagnitude * retraceRatio;
       mgr.retraceTargetPrice = mgr.mainDirection === 1
         ? mgr.trendLegExtremumPrice - retraceDist
@@ -423,7 +454,6 @@ function getNextCandleConfig(
     }
   }
 
-  // 3. Sub-phase transitions
   if (!forcePullback && (mgr.state === 'Trending Up' || mgr.state === 'Trending Down')) {
     if (mgr.subPhaseCandles >= mgr.subPhaseDuration) {
       mgr.subPhaseCandles = 0;
@@ -432,7 +462,7 @@ function getNextCandleConfig(
         mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
       } else if (mgr.subPhase === 'TrendLeg' || mgr.subPhase === 'Continuation') {
         mgr.subPhase = 'Pullback';
-        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3); // 1 to 3 candles
+        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
         mgr.consecutiveSameColorCount = 0;
         mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
 
@@ -446,7 +476,7 @@ function getNextCandleConfig(
         }
       } else if (mgr.subPhase === 'Pullback') {
         mgr.subPhase = 'Continuation';
-        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 5); // 3 to 7 candles
+        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 5);
         mgr.consecutiveSameColorCount = 0;
         mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
         mgr.trendLegStartPrice = currentPrice;
@@ -470,7 +500,6 @@ function getNextCandleConfig(
     }
   }
 
-  // 4. Check Liquidity Sweep
   let isLiquiditySweep = false;
   if (mgr.candlesSinceSweep >= mgr.sweepTrigger) {
     isLiquiditySweep = true;
@@ -484,17 +513,14 @@ function getNextCandleConfig(
 
   const mainDir = mgr.state === 'Trending Up' ? 1 : mgr.state === 'Trending Down' ? -1 : (mgr.mainDirection !== 0 ? mgr.mainDirection : 1);
 
-  // Institutional S/R level reaction check
   const nearSupport = Math.abs(currentPrice - mgr.supportLevel) / (currentPrice || 1) < 0.0008;
   const nearResistance = Math.abs(currentPrice - mgr.resistanceLevel) / (currentPrice || 1) < 0.0008;
 
   if (nearSupport && mgr.subPhase === 'Consolidation') {
-    // Rejection / Bounce off Support level
     candleBias = 1;
     patternType = 'PIN_BAR';
     driftMultiplier = 0.8;
   } else if (nearResistance && mgr.subPhase === 'Consolidation') {
-    // Rejection / Bounce off Resistance level
     candleBias = -1;
     patternType = 'PIN_BAR';
     driftMultiplier = 0.8;
@@ -521,7 +547,8 @@ function getNextCandleConfig(
     else if (isLiquiditySweep) patternType = 'LIQUIDITY_SWEEP';
   } else if (mgr.state === 'Range') {
     const baseMid = BASE_MID_PRICES[symbol] || currentPrice;
-    const rangeBound = baseMid * 0.0016;
+    const spec = SYMBOL_CANDLE_SPECS[symbol] || SYMBOL_CANDLE_SPECS.EURUSD;
+    const rangeBound = spec.avgPips * 10 * spec.pipValue;
 
     if (currentPrice >= (mgr.rangeMidPrice || baseMid) + rangeBound) {
       candleBias = Math.random() < 0.82 ? -1 : 1;
@@ -561,10 +588,12 @@ function getNextCandleConfig(
 }
 
 /**
-  * Simulates a single 1m candle by running a full internal micro-tick simulation path (60-100 ticks).
-  * Guarantees intracandle price oscillation, path randomization (Open->High->Low->Close or Open->Low->High->Close),
-  * 40% reduced wicks, medium body structure, and clean price action.
-  */
+ * Simulates a single 1m candle adhering strictly to:
+ * - Open = previous candle Close
+ * - Exact symbol pip bounds (1-15 pips EURUSD, 5-50 pips XAUUSD)
+ * - Proportional body & wicks
+ * - High >= max(open, close), Low <= min(open, close)
+ */
 function simulate1mCandleViaTicks(
   symbol: string,
   candleTime: number,
@@ -576,146 +605,73 @@ function simulate1mCandleViaTicks(
   isLiquiditySweep: boolean = false,
   patternType: PatternType = 'NORMAL'
 ): Candle {
-  const stepConfig = TICK_STEP_MAP[symbol] || { baseStep: 0.000012, maxStep: 0.00008 };
-  const baseMid = BASE_MID_PRICES[symbol] || openPrice;
-  const minAllowed = Number((baseMid * 0.90).toFixed(decimals));
-  const maxAllowed = Number((baseMid * 1.10).toFixed(decimals));
+  const spec = SYMBOL_CANDLE_SPECS[symbol] || SYMBOL_CANDLE_SPECS.EURUSD;
+  const pipValue = spec.pipValue;
 
-  const tickCount = 60 + Math.floor(Math.random() * 41);
-
-  let currentPrice = openPrice;
-  let highPrice = openPrice;
-  let lowPrice = openPrice;
-
-  for (let t = 0; t < tickCount; t++) {
-    const progress = t / tickCount;
-    let tickDir = 0;
-
-    if (patternType === 'PIN_BAR') {
-      if (candleBias > 0) {
-        // Bullish Pin Bar / Hammer: push down in first 65%, then recover strongly
-        if (progress < 0.65) {
-          tickDir = Math.random() < 0.80 ? -1 : 1;
-        } else {
-          tickDir = Math.random() < 0.88 ? 1 : -1;
-        }
-      } else {
-        // Bearish Pin Bar / Shooting Star: push up in first 65%, then reject strongly
-        if (progress < 0.65) {
-          tickDir = Math.random() < 0.80 ? 1 : -1;
-        } else {
-          tickDir = Math.random() < 0.88 ? -1 : 1;
-        }
-      }
-    } else if (patternType === 'INDECISION') {
-      // Doji / Spinning top: oscillation returning near open
-      if (progress < 0.40) {
-        tickDir = Math.random() < 0.75 ? 1 : -1;
-      } else if (progress < 0.80) {
-        tickDir = Math.random() < 0.75 ? -1 : 1;
-      } else {
-        tickDir = currentPrice > openPrice ? -1 : 1;
-      }
-    } else if (patternType === 'ENGULFING') {
-      // Strong directional body
-      tickDir = Math.random() < 0.85 ? candleBias : -candleBias;
-    } else if (isLiquiditySweep || patternType === 'LIQUIDITY_SWEEP') {
-      if (progress < 0.35) {
-        tickDir = Math.random() < 0.85 ? -candleBias : candleBias;
-      } else {
-        tickDir = Math.random() < 0.88 ? candleBias : -candleBias;
-      }
-    } else {
-      // Normal candle path
-      if (progress < 0.35) {
-        tickDir = Math.random() < 0.70 ? -candleBias : candleBias;
-      } else if (progress < 0.80) {
-        tickDir = Math.random() < 0.80 ? candleBias : -candleBias;
-      } else {
-        tickDir = Math.random() < 0.70 ? candleBias : -candleBias;
-      }
-    }
-
-    if (targetPrice !== null) {
-      const remainingProgress = (t + 1) / tickCount;
-      const targetStep = openPrice + (targetPrice - openPrice) * remainingProgress;
-      if (currentPrice < targetStep && Math.random() < 0.5) {
-        tickDir = 1;
-      } else if (currentPrice > targetStep && Math.random() < 0.5) {
-        tickDir = -1;
-      }
-    }
-
-    const sessMult = getSessionVolatilityMultiplier(candleTime);
-    const noise = 0.7 + Math.random() * 0.8;
-
-    let patternMult = 1.0;
-    if (patternType === 'ENGULFING') patternMult = 1.8;
-    if (patternType === 'PIN_BAR' && progress < 0.65) patternMult = 1.5;
-    if (patternType === 'LIQUIDITY_SWEEP') patternMult = 2.0;
-
-    const isWickPhase = (progress < 0.08 || progress > 0.92) && !isLiquiditySweep && patternType !== 'PIN_BAR';
-    const wickScale = isWickPhase ? 0.40 : 1.0;
-
-    let step = stepConfig.baseStep * driftMultiplier * sessMult * noise * wickScale * patternMult;
-    currentPrice += tickDir * step;
-    currentPrice = Math.max(minAllowed, Math.min(maxAllowed, currentPrice));
-
-    if (currentPrice > highPrice) highPrice = currentPrice;
-    if (currentPrice < lowPrice) lowPrice = currentPrice;
-  }
-
-  let open = Number(openPrice.toFixed(decimals));
-  let close = Number(currentPrice.toFixed(decimals));
-  let high = Number(Math.max(highPrice, open, close).toFixed(decimals));
-  let low = Number(Math.min(lowPrice, open, close).toFixed(decimals));
-
-  // Cap maximum 1m candle range to prevent flash-crash style movements
-  const maxAllowedCandleRange = symbol === 'BTCUSD' ? 120.0 : symbol === 'XAUUSD' ? 2.80 : symbol === 'USDJPY' ? 0.18 : 0.00080;
-  let totalRange = high - low;
-
-  if (totalRange > maxAllowedCandleRange) {
-    const scale = maxAllowedCandleRange / totalRange;
-    const mid = (high + low) / 2;
-    high = Number((mid + (high - mid) * scale).toFixed(decimals));
-    low = Number((mid - (mid - low) * scale).toFixed(decimals));
-    open = Number((mid + (open - mid) * scale).toFixed(decimals));
-    close = Number((mid + (close - mid) * scale).toFixed(decimals));
-    totalRange = high - low;
-  }
-
-  // Enforce realistic body relative to wicks based on pattern type
-  if (patternType === 'NORMAL' || patternType === 'ENGULFING') {
-    // Normal / Engulfing: body should be 50%-75% of total range
-    const minBody = totalRange * (patternType === 'ENGULFING' ? 0.65 : 0.48);
-    let currentBody = Math.abs(close - open);
-    if (currentBody < minBody && totalRange > 0) {
-      const dir = close >= open ? 1 : -1;
-      close = Number((open + dir * minBody).toFixed(decimals));
-      high = Number(Math.max(high, open, close).toFixed(decimals));
-      low = Number(Math.min(low, open, close).toFixed(decimals));
-    }
-  } else if (patternType === 'PIN_BAR') {
-    // Pin Bar: body should be small (<25% of range), wick should be long (65%-80% of range)
-    const maxBody = totalRange * 0.22;
-    let currentBody = Math.abs(close - open);
-    if (currentBody > maxBody && totalRange > 0) {
-      const dir = close >= open ? 1 : -1;
-      close = Number((open + dir * maxBody).toFixed(decimals));
-    }
+  // Determine total 1m candle range in pips based on market phase & pattern
+  let rangePips: number;
+  if (patternType === 'ENGULFING') {
+    rangePips = spec.avgPips + Math.random() * (spec.breakoutPips - spec.avgPips);
   } else if (patternType === 'INDECISION') {
-    // Indecision / Doji: body < 15% of range
-    const maxBody = totalRange * 0.12;
-    let currentBody = Math.abs(close - open);
-    if (currentBody > maxBody && totalRange > 0) {
-      const dir = close >= open ? 1 : -1;
-      close = Number((open + dir * maxBody).toFixed(decimals));
-    }
+    rangePips = spec.minPips + Math.random() * (spec.avgPips - spec.minPips);
+  } else if (driftMultiplier > 1.3) {
+    rangePips = spec.breakoutPips * 0.8 + Math.random() * (spec.maxPips - spec.breakoutPips * 0.8);
+  } else if (driftMultiplier < 0.6) {
+    rangePips = spec.minPips + Math.random() * (spec.avgPips * 0.7 - spec.minPips);
+  } else {
+    rangePips = spec.minPips * 1.2 + Math.random() * (spec.avgPips * 1.5 - spec.minPips * 1.2);
   }
 
-  const priceRange = Math.abs(close - open) + (high - low);
-  const volBase = symbol === 'BTCUSD' ? 50 : symbol === 'XAUUSD' ? 300 : 500;
-  const volume = Math.round(volBase + priceRange * (volBase * 10) * (0.8 + Math.random() * 0.4));
+  // Strictly bound rangePips between minPips and maxPips
+  rangePips = Math.max(spec.minPips, Math.min(spec.maxPips, rangePips));
+  const rangePrice = rangePips * pipValue;
+
+  // Body and wick ratios
+  let bodyRatio = 0.55 + Math.random() * 0.20; // 55% - 75% default
+  let upperWickRatio = 0.12 + Math.random() * 0.15;
+  let lowerWickRatio = 0.12 + Math.random() * 0.15;
+
+  if (patternType === 'PIN_BAR') {
+    // Rejection pin bar / hammer / shooting star
+    bodyRatio = 0.10 + Math.random() * 0.12;
+    if (candleBias > 0) {
+      lowerWickRatio = 0.65 + Math.random() * 0.12;
+      upperWickRatio = Math.max(0.02, 1.0 - bodyRatio - lowerWickRatio);
+    } else {
+      upperWickRatio = 0.65 + Math.random() * 0.12;
+      lowerWickRatio = Math.max(0.02, 1.0 - bodyRatio - upperWickRatio);
+    }
+  } else if (patternType === 'ENGULFING') {
+    bodyRatio = 0.72 + Math.random() * 0.16;
+    upperWickRatio = (1.0 - bodyRatio) * (0.3 + Math.random() * 0.4);
+    lowerWickRatio = 1.0 - bodyRatio - upperWickRatio;
+  } else if (patternType === 'INDECISION') {
+    bodyRatio = 0.02 + Math.random() * 0.08;
+    upperWickRatio = (1.0 - bodyRatio) * (0.4 + Math.random() * 0.2);
+    lowerWickRatio = 1.0 - bodyRatio - upperWickRatio;
+  } else {
+    const sumWicks = 1.0 - bodyRatio;
+    upperWickRatio = sumWicks * (0.35 + Math.random() * 0.30);
+    lowerWickRatio = sumWicks - upperWickRatio;
+  }
+
+  const bodyPrice = rangePrice * bodyRatio;
+  const upperWickPrice = rangePrice * upperWickRatio;
+  const lowerWickPrice = rangePrice * lowerWickRatio;
+
+  const isBullish = candleBias > 0;
+  let open = openPrice;
+  let close = isBullish ? open + bodyPrice : open - bodyPrice;
+  let high = Math.max(open, close) + upperWickPrice;
+  let low = Math.min(open, close) - lowerWickPrice;
+
+  // Ensure absolute boundaries & decimal formatting
+  open = Number(open.toFixed(decimals));
+  close = Number(close.toFixed(decimals));
+  high = Number(Math.max(high, open, close).toFixed(decimals));
+  low = Number(Math.min(low, open, close).toFixed(decimals));
+
+  const volume = Math.round(150 + rangePips * 12 + Math.random() * 200);
 
   return {
     time: candleTime,
