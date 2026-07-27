@@ -191,6 +191,19 @@ export function getClosedPositions(): RichTrade[] {
 }
 
 /**
+ * Instantly inject newly executed trade into positionEngine local memory store
+ * so UI subscribers update instantly (0ms latency) without waiting for Firestore snapshot roundtrip.
+ */
+export function addLocalOpenPosition(tradeData: any) {
+  const rich = mapToRichTrade(tradeData);
+  if (!openPositions.some((p) => p.id === rich.id)) {
+    openPositions = [rich, ...openPositions];
+    syncFloatingPnL();
+    notifySubscribers();
+  }
+}
+
+/**
  * Execute direct position closure (Market Close)
  */
 export async function executeClosePosition(tradeId: string, exitPrice: number, closeReason = 'Manual Close'): Promise<void> {

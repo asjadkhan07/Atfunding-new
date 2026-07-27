@@ -17,9 +17,13 @@ import EmailCenter from './EmailCenter';
 import { getCandleEngineMetrics } from '../core/candleEngine';
 import LuxuryCertificate, { DEFAULT_CERT_TEMPLATE } from './LuxuryCertificate';
 import { processAffiliateCommission } from '../utils/affiliateUtils';
+import { subscribeToPrices, SymbolPrice, DECIMAL_PLACES } from '../core/priceEngine';
+import { getSpikeConfig, setSpikeConfig, resetSpikeConfig, subscribeToMarketEvents, MarketEventLog, SpikeConfig } from '../core/spikeEngine';
+import { calculateTradePnL } from '../core/pnlEngine';
+import { executeClosePosition } from '../core/positionEngine';
 
 export default function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control'>('stats');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [payouts, setPayouts] = useState<PayoutRequest[]>([]);
@@ -28,6 +32,18 @@ export default function AdminPanel() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Market Spike Control States
+  const [spikeEnabled, setSpikeEnabled] = useState<boolean>(false);
+  const [spikeSymbol, setSpikeSymbol] = useState<string>('EURUSD');
+  const [spikePipSize, setSpikePipSize] = useState<number>(100);
+  const [spikeDirection, setSpikeDirection] = useState<'Up' | 'Down'>('Up');
+  const [spikeApplyTo, setSpikeApplyTo] = useState<'Next Candle Only' | 'Current Candle'>('Next Candle Only');
+  const [spikeAutoReset, setSpikeAutoReset] = useState<boolean>(true);
+  const [marketEventLogs, setMarketEventLogs] = useState<MarketEventLog[]>([]);
+  const [marketControlMsg, setMarketControlMsg] = useState<string>('');
+  const [isApplyingSpike, setIsApplyingSpike] = useState<boolean>(false);
+  const [livePrices, setLivePrices] = useState<Record<string, SymbolPrice>>({});
 
   // Universal Admin Search States
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
@@ -46,6 +62,68 @@ export default function AdminPanel() {
     }, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Realtime Market Spike Control & Live Prices Listener
+  useEffect(() => {
+    const initialCfg = getSpikeConfig();
+    setSpikeEnabled(initialCfg.enabled);
+    setSpikeSymbol(initialCfg.symbol);
+    setSpikePipSize(initialCfg.pipSize);
+    setSpikeDirection(initialCfg.direction);
+    setSpikeApplyTo(initialCfg.applyTo);
+    setSpikeAutoReset(initialCfg.autoReset);
+
+    const unsubEvents = subscribeToMarketEvents((logs) => {
+      setMarketEventLogs(logs);
+    });
+
+    const unsubPrices = subscribeToPrices((prices) => {
+      setLivePrices(prices);
+    });
+
+    return () => {
+      unsubEvents();
+      unsubPrices();
+    };
+  }, []);
+
+  const handleApplySpike = async () => {
+    setIsApplyingSpike(true);
+    setMarketControlMsg('');
+    try {
+      await setSpikeConfig({
+        enabled: spikeEnabled,
+        symbol: spikeSymbol,
+        pipSize: spikePipSize,
+        direction: spikeDirection,
+        applyTo: spikeApplyTo,
+        autoReset: spikeAutoReset,
+        statusMessage: spikeEnabled
+          ? `Current Market Event: ${spikePipSize} Pip ${spikeDirection} Spike on ${spikeSymbol}`
+          : 'Market Control: Idle (Standard Simulation)',
+        adminEmail: auth.currentUser?.email || adminEmailInput || 'ATgrowfund@gmail.com',
+      }, auth.currentUser?.email || adminEmailInput || 'ATgrowfund@gmail.com');
+
+      setMarketControlMsg(spikeEnabled ? `✅ Candle Spike Activated! (${spikePipSize} Pips ${spikeDirection} on ${spikeSymbol})` : 'ℹ️ Market Spike Disabled. Standard simulation active.');
+    } catch (err: any) {
+      setMarketControlMsg(`❌ Error triggering spike: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsApplyingSpike(false);
+    }
+  };
+
+  const handleResetSpike = async () => {
+    setIsApplyingSpike(true);
+    try {
+      await resetSpikeConfig(auth.currentUser?.email || adminEmailInput || 'ATgrowfund@gmail.com');
+      setSpikeEnabled(false);
+      setMarketControlMsg('✅ Spike cancelled. Market reset to idle standard simulation.');
+    } catch (err: any) {
+      setMarketControlMsg(`❌ Error resetting spike: ${err.message}`);
+    } finally {
+      setIsApplyingSpike(false);
+    }
+  };
 
   const [telemetryStats, setTelemetryStats] = useState(firebaseTelemetry.getStats());
 
@@ -2146,6 +2224,7 @@ export default function AdminPanel() {
       <div className="flex bg-white/5 border border-white/10 rounded-full p-1 max-w-5xl overflow-x-auto scrollbar-none">
         {[
           { id: 'stats', label: 'Dashboard', icon: Layers },
+          { id: 'market_control', label: 'Market Control', icon: Sliders },
           { id: 'search', label: 'Universal Search', icon: Search },
           { id: 'users', label: 'Users', icon: Users },
           { id: 'accounts', label: 'Accounts', icon: Gift },
@@ -2187,6 +2266,377 @@ export default function AdminPanel() {
         <div className="py-20 text-center text-xs text-slate-400">Loading admin dataset records...</div>
       ) : (
         <div className="space-y-6">
+          {/* Global Active Market Event Banner */}
+          <div className={`p-4 rounded-3xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-all ${
+            spikeEnabled
+              ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 shadow-xl shadow-amber-500/5'
+              : 'bg-white/5 border-white/10 text-slate-300'
+          }`}>
+            <div className="flex items-center space-x-3">
+              <div className={`p-2.5 rounded-2xl ${spikeEnabled ? 'bg-amber-500/20 text-amber-400 animate-pulse' : 'bg-slate-800 text-slate-400'}`}>
+                <Activity className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400">Market Control Status</div>
+                <div className="text-sm font-black font-mono">
+                  {spikeEnabled
+                    ? `⚡ Current Market Event: ${spikePipSize} Pip ${spikeDirection} Spike on ${spikeSymbol}`
+                    : 'Current Market Event: Standard Engine Simulation (Idle)'}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 w-full sm:w-auto">
+              <button
+                onClick={() => setActiveTab('market_control')}
+                className="px-3.5 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-xs font-bold rounded-xl transition font-mono whitespace-nowrap"
+              >
+                Configure Market
+              </button>
+              {spikeEnabled && (
+                <button
+                  onClick={handleResetSpike}
+                  disabled={isApplyingSpike}
+                  className="px-3.5 py-1.5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-300 text-xs font-bold rounded-xl transition font-mono whitespace-nowrap"
+                >
+                  Cancel Spike
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* MARKET CONTROL TAB */}
+          {activeTab === 'market_control' && (
+            <div className="space-y-6 animate-fade-in">
+              {/* Active Event Status Header */}
+              <div className={`p-5 rounded-3xl border transition-all ${
+                spikeEnabled
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-200 shadow-lg shadow-amber-500/5'
+                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              }`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-center space-x-3.5">
+                    <div className={`p-3 rounded-2xl ${spikeEnabled ? 'bg-amber-500/20 text-amber-400 animate-pulse' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                      <Activity className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400">Market Engine Status</div>
+                      <div className="text-lg font-black font-mono mt-0.5">
+                        {spikeEnabled
+                          ? `⚡ Current Market Event: ${spikePipSize} Pip ${spikeDirection} Spike`
+                          : 'Current Market Event: Standard Engine Simulation (Idle)'}
+                      </div>
+                      {spikeEnabled && (
+                        <div className="text-xs text-amber-300/80 mt-0.5 font-medium">
+                          Target: <span className="font-bold text-white font-mono">{spikeSymbol}</span> | Apply To: <span className="font-bold text-white font-mono">{spikeApplyTo}</span> | Auto Reset: <span className="font-bold text-white font-mono">{spikeAutoReset ? 'ON' : 'OFF'}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {spikeEnabled && (
+                    <button
+                      onClick={handleResetSpike}
+                      disabled={isApplyingSpike}
+                      className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 text-xs font-bold rounded-2xl transition-all shadow-md flex items-center space-x-1.5 shrink-0"
+                    >
+                      <X className="w-4 h-4" />
+                      <span>Cancel Active Spike</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {marketControlMsg && (
+                <div className={`p-4 rounded-2xl border text-xs font-bold ${
+                  marketControlMsg.includes('✅')
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : marketControlMsg.includes('ℹ️')
+                    ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+                    : 'bg-red-500/10 border-red-500/30 text-red-300'
+                }`}>
+                  {marketControlMsg}
+                </div>
+              )}
+
+              {/* Main Market Spike Controls Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-7 bg-white/5 border border-white/10 rounded-3xl p-6 space-y-6 backdrop-blur-sm shadow-xl">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                    <div>
+                      <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                        <Sliders className="w-5 h-5 text-blue-400" />
+                        <span>Candle Spike Configuration</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">Inject controlled high-volatility liquidity spikes into live chart feeds</p>
+                    </div>
+
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={spikeEnabled}
+                        onChange={(e) => setSpikeEnabled(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                      <span className="ml-2.5 text-xs font-bold text-slate-200">Enable Candle Spike</span>
+                    </label>
+                  </div>
+
+                  {/* Controls Form */}
+                  <div className="space-y-5">
+                    {/* Symbol & Size */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">Target Symbol</label>
+                        <select
+                          value={spikeSymbol}
+                          onChange={(e) => setSpikeSymbol(e.target.value)}
+                          className="w-full bg-slate-900/80 border border-white/10 rounded-2xl px-4 py-2.5 text-xs font-bold text-white font-mono focus:outline-none focus:border-blue-500"
+                        >
+                          {['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'XAUUSD', 'BTCUSD', 'ETHUSD', 'NAS100', 'US30'].map((sym) => (
+                            <option key={sym} value={sym} className="bg-slate-900 text-white font-mono">{sym}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">Spike Size (Pips)</label>
+                        <input
+                          type="number"
+                          min="10"
+                          max="2000"
+                          step="10"
+                          value={spikePipSize}
+                          onChange={(e) => setSpikePipSize(Number(e.target.value))}
+                          className="w-full bg-slate-900/80 border border-white/10 rounded-2xl px-4 py-2.5 text-xs font-bold text-white font-mono focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Preset Buttons for Pip Size */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Quick Pip Presets</label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {[
+                          { size: 50, label: '50 Pips (Small News)' },
+                          { size: 100, label: '100 Pips (Medium)' },
+                          { size: 200, label: '200 Pips (Strong)' },
+                          { size: 500, label: '500 Pips (Extreme)' },
+                        ].map((p) => (
+                          <button
+                            key={p.size}
+                            type="button"
+                            onClick={() => setSpikePipSize(p.size)}
+                            className={`px-3 py-2 rounded-2xl text-xs font-bold font-mono transition-all border ${
+                              spikePipSize === p.size
+                                ? 'bg-blue-600 text-white border-blue-400 shadow-md'
+                                : 'bg-white/5 text-slate-300 border-white/10 hover:bg-white/10'
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Direction & Apply To */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">Spike Direction</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setSpikeDirection('Up')}
+                            className={`px-4 py-2.5 rounded-2xl text-xs font-bold uppercase font-mono flex items-center justify-center space-x-1.5 transition-all border ${
+                              spikeDirection === 'Up'
+                                ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-500/20'
+                                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
+                            }`}
+                          >
+                            <span>Up ▲</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSpikeDirection('Down')}
+                            className={`px-4 py-2.5 rounded-2xl text-xs font-bold uppercase font-mono flex items-center justify-center space-x-1.5 transition-all border ${
+                              spikeDirection === 'Down'
+                                ? 'bg-red-600 text-white border-red-400 shadow-lg shadow-red-500/20'
+                                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
+                            }`}
+                          >
+                            <span>Down ▼</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">Apply To</label>
+                        <select
+                          value={spikeApplyTo}
+                          onChange={(e) => setSpikeApplyTo(e.target.value as any)}
+                          className="w-full bg-slate-900/80 border border-white/10 rounded-2xl px-4 py-2.5 text-xs font-bold text-white font-mono focus:outline-none focus:border-blue-500"
+                        >
+                          <option value="Next Candle Only" className="bg-slate-900 text-white">Next Candle Only</option>
+                          <option value="Current Candle" className="bg-slate-900 text-white">Current Candle</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Auto Reset Toggle */}
+                    <div className="flex items-center justify-between p-4 bg-slate-900/50 border border-white/10 rounded-2xl">
+                      <div>
+                        <div className="text-xs font-bold text-white">Auto Reset After Spike</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">Automatically turns off spike system once candle completes and enters 3-5 candle stabilization mode</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-4">
+                        <input
+                          type="checkbox"
+                          checked={spikeAutoReset}
+                          onChange={(e) => setSpikeAutoReset(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleApplySpike}
+                        disabled={isApplyingSpike}
+                        className={`w-full sm:flex-1 py-3 px-6 rounded-2xl font-bold text-xs uppercase tracking-wider transition-all shadow-xl flex items-center justify-center space-x-2 ${
+                          spikeEnabled
+                            ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-amber-500/20'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/20'
+                        }`}
+                      >
+                        <Activity className="w-4 h-4" />
+                        <span>{spikeEnabled ? 'Update Active Spike Event' : '🚀 Trigger Market Spike'}</span>
+                      </button>
+
+                      {spikeEnabled && (
+                        <button
+                          type="button"
+                          onClick={handleResetSpike}
+                          disabled={isApplyingSpike}
+                          className="w-full sm:w-auto py-3 px-5 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 text-xs font-bold rounded-2xl transition-all"
+                        >
+                          Reset Engine
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Safety & Realtime Price Overview */}
+                <div className="lg:col-span-5 space-y-6">
+                  {/* Safety Box */}
+                  <div className="bg-blue-500/10 border border-blue-500/20 rounded-3xl p-6 backdrop-blur-sm space-y-3">
+                    <div className="flex items-center space-x-2 text-blue-300 font-bold text-sm">
+                      <Shield className="w-5 h-5 text-blue-400" />
+                      <span>Safety & Logic Rules</span>
+                    </div>
+                    <ul className="text-xs text-slate-300 space-y-2 list-disc list-inside leading-relaxed font-medium">
+                      <li><strong>Chart Feeds Only:</strong> Spike logic drives price fluctuations and 1m candle formation cleanly.</li>
+                      <li><strong>Account Integrity:</strong> User account balances, open positions, rules, and database schema remain 100% safe and uncorrupted.</li>
+                      <li><strong>Realistic Market Dynamics:</strong> Price moves smoothly without single-frame teleportation, forming complete body and wicks.</li>
+                      <li><strong>Smooth Stabilization:</strong> After spike execution, market volatility smoothly normalizes over 3–5 candles.</li>
+                    </ul>
+                  </div>
+
+                  {/* Live Prices Ticker */}
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-6 space-y-4 backdrop-blur-sm shadow-xl">
+                    <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+                      <span>Live Price Feed Ticker</span>
+                      <span className="text-[10px] text-emerald-400 font-mono">Realtime 500ms</span>
+                    </h4>
+                    <div className="grid grid-cols-2 gap-3 max-h-[220px] overflow-y-auto scrollbar-none pr-1">
+                      {['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'ETHUSD'].map((s) => {
+                        const item = livePrices[s];
+                        return (
+                          <div key={s} className="bg-slate-900/60 border border-white/5 rounded-2xl p-3">
+                            <div className="text-[10px] font-bold text-slate-400 font-mono">{s}</div>
+                            <div className="text-sm font-black font-mono text-white mt-0.5">
+                              {item ? item.last.toFixed(DECIMAL_PLACES[s] || 4) : 'Loading...'}
+                            </div>
+                            <div className={`text-[10px] font-mono font-bold mt-0.5 ${item && item.changePercent >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                              {item ? `${item.changePercent >= 0 ? '+' : ''}${item.changePercent.toFixed(2)}%` : '--'}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Firestore Audit Logs: marketEvents Collection */}
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                      <Clock className="w-5 h-5 text-amber-400" />
+                      <span>Market Events Log (`marketEvents` Collection)</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Firestore audit collection logging every administrative market spike event</p>
+                  </div>
+                  <div className="text-xs font-mono font-bold text-slate-400">
+                    Total Logs: {marketEventLogs.length}
+                  </div>
+                </div>
+
+                {marketEventLogs.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 font-mono">No market events recorded in `marketEvents` collection yet.</div>
+                ) : (
+                  <div className="overflow-x-auto max-h-[350px] scrollbar-none">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead>
+                        <tr className="border-b border-white/10 font-mono uppercase text-slate-400">
+                          <th className="py-2.5">Timestamp</th>
+                          <th className="py-2.5">Event Type</th>
+                          <th className="py-2.5">Symbol</th>
+                          <th className="py-2.5">Size (Pips)</th>
+                          <th className="py-2.5">Direction</th>
+                          <th className="py-2.5">Apply To</th>
+                          <th className="py-2.5">Admin Email</th>
+                          <th className="py-2.5 text-right">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/10 font-medium">
+                        {marketEventLogs.map((log) => (
+                          <tr key={log.id || log.timestamp}>
+                            <td className="py-2.5 font-mono text-slate-400 text-[11px]">{new Date(log.timestamp).toLocaleString()}</td>
+                            <td className="py-2.5 font-bold font-mono text-amber-400">{log.eventType}</td>
+                            <td className="py-2.5 font-bold font-mono text-white">{log.symbol}</td>
+                            <td className="py-2.5 font-mono text-white">{log.pipSize} Pips</td>
+                            <td className="py-2.5 font-mono">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                log.direction === 'Up' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
+                              }`}>
+                                {log.direction}
+                              </span>
+                            </td>
+                            <td className="py-2.5 font-mono text-slate-300">{log.applyTo}</td>
+                            <td className="py-2.5 font-mono text-slate-400">{log.adminEmail}</td>
+                            <td className="py-2.5 text-right font-mono">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                log.status === 'ACTIVE' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse' : 'bg-emerald-500/10 text-emerald-400'
+                              }`}>
+                                {log.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* TAB 1: OVERALL STATISTICS */}
           {activeTab === 'stats' && (
             <div className="space-y-6 animate-fade-in">
@@ -5845,50 +6295,199 @@ export default function AdminPanel() {
             </div>
           )}
 
-          {/* TAB 6: VIEW ALL TRADES */}
+          {/* TAB 6: LIVE MONITOR & ALL TRADES */}
           {activeTab === 'trades' && (
-            <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl">
-              <h3 className="text-base font-bold text-white uppercase tracking-wider mb-4">Global Trades Monitor</h3>
-              {trades.length === 0 ? (
-                <div className="py-12 text-center text-xs text-slate-500">No mock transactions executed on the platform yet.</div>
-              ) : (
-                <div className="overflow-x-auto max-h-[400px]">
-                  <table className="w-full text-left text-xs text-slate-300">
-                    <thead>
-                      <tr className="border-b border-white/10 font-mono uppercase text-slate-400">
-                        <th className="py-2">Trade ID</th>
-                        <th className="py-2">Account ID</th>
-                        <th className="py-2">Asset</th>
-                        <th className="py-2">Type</th>
-                        <th className="py-2">Volume</th>
-                        <th className="py-2">PnL</th>
-                        <th className="py-2 text-right">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/10 font-medium">
-                      {trades.map((t) => (
-                        <tr key={t.id}>
-                          <td className="py-2.5 font-mono text-slate-500">{t.id}</td>
-                          <td className="py-2.5 font-mono text-white">{t.accountId}</td>
-                          <td className="py-2.5 font-bold font-mono">{t.symbol}</td>
-                          <td className="py-2.5">
-                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold font-mono uppercase ${
-                              t.type === 'buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
-                            }`}>
-                              {t.type}
-                            </span>
-                          </td>
-                          <td className="py-2.5 font-mono">{t.lots} Lots</td>
-                          <td className={`py-2.5 font-mono font-bold ${t.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                            ${t.profit.toFixed(2)}
-                          </td>
-                          <td className="py-2.5 text-right uppercase text-[10px] text-slate-400 font-mono font-bold">{t.status}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+            <div className="space-y-6 animate-fade-in">
+              {/* Live Monitor Summary Cards */}
+              {(() => {
+                const openPositions = trades.filter((t) => t.status === 'open' || t.status === 'OPEN');
+                const closedPositions = trades.filter((t) => t.status !== 'open' && t.status !== 'OPEN');
+
+                let totalFloatingPnL = 0;
+                let totalOpenVolume = 0;
+
+                openPositions.forEach((t) => {
+                  const dir = (t.type || 'buy').toLowerCase() as 'buy' | 'sell';
+                  const lots = t.lots || (t as any).volume || 1;
+                  const entryPrice = t.entryPrice || t.openPrice || 0;
+                  const curBid = livePrices[t.symbol]?.bid || livePrices[t.symbol]?.last || entryPrice;
+                  const curAsk = livePrices[t.symbol]?.ask || livePrices[t.symbol]?.last || entryPrice;
+                  
+                  const pnl = calculateTradePnL(t.symbol, dir, entryPrice, lots, curBid, curAsk);
+                  totalFloatingPnL += pnl;
+                  totalOpenVolume += lots;
+                });
+
+                return (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Active Open User Trades</p>
+                        <p className="text-2xl font-black text-white mt-1.5 font-mono">{openPositions.length}</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Live market positions</p>
+                      </div>
+
+                      <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Live Floating PnL</p>
+                        <p className={`text-2xl font-black mt-1.5 font-mono ${totalFloatingPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {totalFloatingPnL >= 0 ? '+' : ''}${totalFloatingPnL.toFixed(2)}
+                        </p>
+                        <p className="text-[11px] text-slate-400 mt-1">Combined floating profit/loss</p>
+                      </div>
+
+                      <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Active Volume</p>
+                        <p className="text-2xl font-black text-blue-400 mt-1.5 font-mono">{totalOpenVolume.toFixed(2)} Lots</p>
+                        <p className="text-[11px] text-slate-400 mt-1 font-mono">Exposure across all symbols</p>
+                      </div>
+
+                      <div className="bg-white/5 border border-white/10 rounded-3xl p-5 backdrop-blur-sm shadow-xl">
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Total Historical Trades</p>
+                        <p className="text-2xl font-black text-amber-400 mt-1.5 font-mono">{trades.length}</p>
+                        <p className="text-[11px] text-slate-400 mt-1 font-mono">{closedPositions.length} closed trades</p>
+                      </div>
+                    </div>
+
+                    {/* Active Open User Trades Table */}
+                    <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-base font-bold text-white flex items-center space-x-2">
+                            <Activity className="w-5 h-5 text-emerald-400 animate-pulse" />
+                            <span>Live Active User Positions & Floating PnL</span>
+                          </h3>
+                          <p className="text-xs text-slate-400 mt-0.5">Real-time open user positions updating live with tick prices and PnL</p>
+                        </div>
+                        <span className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-xs font-mono font-bold">
+                          {openPositions.length} Open Positions
+                        </span>
+                      </div>
+
+                      {openPositions.length === 0 ? (
+                        <div className="py-12 text-center text-xs text-slate-500 font-mono">No open user positions currently active on the platform.</div>
+                      ) : (
+                        <div className="overflow-x-auto max-h-[400px] scrollbar-none">
+                          <table className="w-full text-left text-xs text-slate-300">
+                            <thead>
+                              <tr className="border-b border-white/10 font-mono uppercase text-slate-400">
+                                <th className="py-2.5">User / Account</th>
+                                <th className="py-2.5">Symbol</th>
+                                <th className="py-2.5">Type</th>
+                                <th className="py-2.5">Volume</th>
+                                <th className="py-2.5">Entry Price</th>
+                                <th className="py-2.5">Live Price</th>
+                                <th className="py-2.5">Floating PnL</th>
+                                <th className="py-2.5 text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/10 font-medium">
+                              {openPositions.map((t) => {
+                                const dir = (t.type || 'buy').toLowerCase() as 'buy' | 'sell';
+                                const lots = t.lots || (t as any).volume || 1;
+                                const entryPrice = t.entryPrice || t.openPrice || 0;
+                                const curBid = livePrices[t.symbol]?.bid || livePrices[t.symbol]?.last || entryPrice;
+                                const curAsk = livePrices[t.symbol]?.ask || livePrices[t.symbol]?.last || entryPrice;
+                                const curPrice = livePrices[t.symbol]?.last || entryPrice;
+
+                                const livePnl = calculateTradePnL(t.symbol, dir, entryPrice, lots, curBid, curAsk);
+                                const decs = DECIMAL_PLACES[t.symbol] || 4;
+
+                                const userObj = users.find(u => u.uid === t.userId);
+
+                                return (
+                                  <tr key={t.id} className="hover:bg-white/[0.02]">
+                                    <td className="py-3">
+                                      <div className="font-bold text-white text-xs">{userObj?.email || userObj?.displayName || t.userId || 'User'}</div>
+                                      <div className="font-mono text-[10px] text-slate-400">Acc: {t.accountId}</div>
+                                    </td>
+                                    <td className="py-3 font-bold font-mono text-white text-sm">{t.symbol}</td>
+                                    <td className="py-3">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold font-mono uppercase ${
+                                        dir === 'buy' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                                      }`}>
+                                        {dir}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 font-mono text-white font-bold">{lots} Lots</td>
+                                    <td className="py-3 font-mono text-slate-300">{entryPrice.toFixed(decs)}</td>
+                                    <td className="py-3 font-mono text-white font-bold">{curPrice.toFixed(decs)}</td>
+                                    <td className={`py-3 font-mono font-bold text-sm ${livePnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                      {livePnl >= 0 ? '+' : ''}${livePnl.toFixed(2)}
+                                    </td>
+                                    <td className="py-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          if (confirm(`Close open position ${t.id} for ${t.symbol} at live price $${curPrice.toFixed(decs)}?`)) {
+                                            try {
+                                              await executeClosePosition(t.id, curPrice, 'Closed by Admin via Live Monitor');
+                                              alert('Position closed!');
+                                            } catch (err: any) {
+                                              alert(`Error closing trade: ${err.message}`);
+                                            }
+                                          }
+                                        }}
+                                        className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 text-[10px] font-bold rounded-xl transition cursor-pointer"
+                                      >
+                                        Close Position
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Historical Closed Trades Table */}
+                    <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-4">
+                      <h3 className="text-base font-bold text-white uppercase tracking-wider">Historical Closed Trades Record</h3>
+                      {closedPositions.length === 0 ? (
+                        <div className="py-8 text-center text-xs text-slate-500 font-mono">No closed trades in history yet.</div>
+                      ) : (
+                        <div className="overflow-x-auto max-h-[300px] scrollbar-none">
+                          <table className="w-full text-left text-xs text-slate-300">
+                            <thead>
+                              <tr className="border-b border-white/10 font-mono uppercase text-slate-400">
+                                <th className="py-2">Trade ID</th>
+                                <th className="py-2">Account ID</th>
+                                <th className="py-2">Asset</th>
+                                <th className="py-2">Type</th>
+                                <th className="py-2">Volume</th>
+                                <th className="py-2">PnL</th>
+                                <th className="py-2 text-right">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/10 font-medium">
+                              {closedPositions.map((t) => (
+                                <tr key={t.id}>
+                                  <td className="py-2.5 font-mono text-slate-500">{t.id}</td>
+                                  <td className="py-2.5 font-mono text-white">{t.accountId}</td>
+                                  <td className="py-2.5 font-bold font-mono">{t.symbol}</td>
+                                  <td className="py-2.5">
+                                    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold font-mono uppercase ${
+                                      t.type === 'buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
+                                    }`}>
+                                      {t.type}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 font-mono">{t.lots} Lots</td>
+                                  <td className={`py-2.5 font-mono font-bold ${t.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    ${t.profit.toFixed(2)}
+                                  </td>
+                                  <td className="py-2.5 text-right uppercase text-[10px] text-slate-400 font-mono font-bold">{t.status}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
 

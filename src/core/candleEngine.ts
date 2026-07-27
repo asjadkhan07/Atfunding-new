@@ -1,4 +1,5 @@
 import { subscribeToPrices, SymbolPrice, DECIMAL_PLACES, priceEngineState, BASE_MID_PRICES, TICK_STEP_MAP } from './priceEngine';
+import { notifyCandleCloseForSpike } from './spikeEngine';
 
 export interface Candle {
   time: number; // Unix timestamp in seconds
@@ -250,8 +251,10 @@ interface TrendEngineManager {
   subPhaseCandles: number;
   subPhaseDuration: number;
   
-  // Range boundaries tracking
+  // Range & Structural boundaries tracking
   rangeMidPrice: number;
+  supportLevel: number;
+  resistanceLevel: number;
   
   // Consecutive same color & pullback limit tracking
   consecutiveSameColorCount: number;
@@ -274,21 +277,21 @@ function selectNextMarketState(prevState?: MarketRegime, lastDirection: number =
   let duration: number;
   let mainDir = 0;
 
-  if (rand < 0.45) {
+  if (rand < 0.50) {
     if (lastDirection !== 0) {
       mainDir = Math.random() < 0.82 ? lastDirection : -lastDirection;
     } else {
       mainDir = Math.random() < 0.5 ? 1 : -1;
     }
     state = mainDir === 1 ? 'Trending Up' : 'Trending Down';
-    duration = 15 + Math.floor(Math.random() * 26);
-  } else if (rand < 0.80) {
+    duration = 18 + Math.floor(Math.random() * 24);
+  } else if (rand < 0.82) {
     state = 'Range';
-    duration = 15 + Math.floor(Math.random() * 26);
+    duration = 18 + Math.floor(Math.random() * 24);
     mainDir = 0;
   } else {
     state = 'Breakout';
-    duration = 15 + Math.floor(Math.random() * 21);
+    duration = 14 + Math.floor(Math.random() * 18);
     mainDir = Math.random() < 0.5 ? 1 : -1;
   }
 
@@ -302,17 +305,17 @@ function createTrendEngineManager(initialDir?: number, symbol: string = 'EURUSD'
     initial.state = initialDir === 1 ? 'Trending Up' : 'Trending Down';
   }
 
-  let initialSub: SubPhase = 'TrendLeg';
-  let initialSubDur = 3 + Math.floor(Math.random() * 5);
+  // Market structure rule: Consolidation before trend/breakout moves
+  let initialSub: SubPhase = 'Consolidation';
+  let initialSubDur = 2 + Math.floor(Math.random() * 4);
   if (initial.state === 'Range') {
     initialSub = 'Consolidation';
     initialSubDur = initial.duration;
-  } else if (initial.state === 'Breakout') {
-    initialSub = 'Consolidation';
-    initialSubDur = 3 + Math.floor(Math.random() * 6);
   }
 
   const maxLimit = getMaxConsecutiveCandles(symbol);
+  const baseMid = BASE_MID_PRICES[symbol] || 1.1400;
+  const rangeBound = baseMid * 0.0015;
 
   return {
     state: initial.state,
@@ -322,12 +325,14 @@ function createTrendEngineManager(initialDir?: number, symbol: string = 'EURUSD'
     subPhase: initialSub,
     subPhaseCandles: 0,
     subPhaseDuration: initialSubDur,
-    rangeMidPrice: 0,
+    rangeMidPrice: baseMid,
+    supportLevel: baseMid - rangeBound,
+    resistanceLevel: baseMid + rangeBound,
     consecutiveSameColorCount: 0,
     lastCandleColor: 0,
     maxSameColorLimit: maxLimit,
-    trendLegStartPrice: 0,
-    trendLegExtremumPrice: 0,
+    trendLegStartPrice: baseMid,
+    trendLegExtremumPrice: baseMid,
     retraceTargetPrice: null,
     candlesSinceSweep: 0,
     sweepTrigger: 12 + Math.floor(Math.random() * 18),
@@ -378,16 +383,23 @@ function getNextCandleConfig(
     mgr.trendLegExtremumPrice = currentPrice;
     mgr.retraceTargetPrice = null;
 
+    // Structural level updating
+    const baseMid = BASE_MID_PRICES[symbol] || currentPrice;
+    const rangeBound = baseMid * 0.0016;
+    mgr.rangeMidPrice = currentPrice;
+    mgr.supportLevel = currentPrice - rangeBound;
+    mgr.resistanceLevel = currentPrice + rangeBound;
+
     if (mgr.state === 'Trending Up' || mgr.state === 'Trending Down') {
-      mgr.subPhase = 'TrendLeg';
-      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 5); // 3 to 7 candles
+      // Require consolidation phase before trend leg starts
+      mgr.subPhase = 'Consolidation';
+      mgr.subPhaseDuration = 2 + Math.floor(Math.random() * 3); // 2 to 4 consolidation candles before trend
     } else if (mgr.state === 'Range') {
       mgr.subPhase = 'Consolidation';
       mgr.subPhaseDuration = mgr.stateDuration;
-      mgr.rangeMidPrice = currentPrice;
     } else {
       mgr.subPhase = 'Consolidation';
-      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 6);
+      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4); // Consolidation before breakout
     }
   }
 
@@ -415,9 +427,12 @@ function getNextCandleConfig(
   if (!forcePullback && (mgr.state === 'Trending Up' || mgr.state === 'Trending Down')) {
     if (mgr.subPhaseCandles >= mgr.subPhaseDuration) {
       mgr.subPhaseCandles = 0;
-      if (mgr.subPhase === 'TrendLeg' || mgr.subPhase === 'Continuation') {
+      if (mgr.subPhase === 'Consolidation') {
+        mgr.subPhase = 'TrendLeg';
+        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
+      } else if (mgr.subPhase === 'TrendLeg' || mgr.subPhase === 'Continuation') {
         mgr.subPhase = 'Pullback';
-        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 4); // 1 to 4 candles
+        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3); // 1 to 3 candles
         mgr.consecutiveSameColorCount = 0;
         mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
 
@@ -444,13 +459,13 @@ function getNextCandleConfig(
       mgr.subPhaseCandles = 0;
       if (mgr.subPhase === 'Consolidation') {
         mgr.subPhase = 'Breakout';
-        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
+        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 2);
       } else if (mgr.subPhase === 'Breakout') {
         mgr.subPhase = 'Retest';
         mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 2);
       } else if (mgr.subPhase === 'Retest') {
         mgr.subPhase = 'Continuation';
-        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 5);
+        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
       }
     }
   }
@@ -469,57 +484,71 @@ function getNextCandleConfig(
 
   const mainDir = mgr.state === 'Trending Up' ? 1 : mgr.state === 'Trending Down' ? -1 : (mgr.mainDirection !== 0 ? mgr.mainDirection : 1);
 
-  if (mgr.subPhase === 'Pullback') {
+  // Institutional S/R level reaction check
+  const nearSupport = Math.abs(currentPrice - mgr.supportLevel) / (currentPrice || 1) < 0.0008;
+  const nearResistance = Math.abs(currentPrice - mgr.resistanceLevel) / (currentPrice || 1) < 0.0008;
+
+  if (nearSupport && mgr.subPhase === 'Consolidation') {
+    // Rejection / Bounce off Support level
+    candleBias = 1;
+    patternType = 'PIN_BAR';
+    driftMultiplier = 0.8;
+  } else if (nearResistance && mgr.subPhase === 'Consolidation') {
+    // Rejection / Bounce off Resistance level
+    candleBias = -1;
+    patternType = 'PIN_BAR';
+    driftMultiplier = 0.8;
+  } else if (mgr.subPhase === 'Consolidation') {
+    candleBias = Math.random() < 0.50 ? 1 : -1;
+    driftMultiplier = 0.4 + Math.random() * 0.3;
+    patternType = Math.random() < 0.35 ? 'INDECISION' : 'NORMAL';
+  } else if (mgr.subPhase === 'Pullback') {
     candleBias = -mainDir;
-    driftMultiplier = 1.0 + Math.random() * 0.5;
+    driftMultiplier = 0.8 + Math.random() * 0.3;
 
     const randPattern = Math.random();
-    if (randPattern < 0.22) patternType = 'PIN_BAR';
-    else if (randPattern < 0.38) patternType = 'INDECISION';
-    else if (randPattern < 0.52) patternType = 'ENGULFING';
+    if (randPattern < 0.30) patternType = 'PIN_BAR';
+    else if (randPattern < 0.50) patternType = 'INDECISION';
+    else if (randPattern < 0.65) patternType = 'ENGULFING';
   } else if (mgr.state === 'Trending Up' || mgr.state === 'Trending Down') {
     candleBias = Math.random() < 0.82 ? mainDir : -mainDir;
-    driftMultiplier = 1.4 + Math.random() * 0.8;
+    driftMultiplier = 1.1 + Math.random() * 0.4;
 
     const randPattern = Math.random();
-    if (randPattern < 0.16) patternType = 'ENGULFING';
-    else if (randPattern < 0.28) patternType = 'PIN_BAR';
-    else if (randPattern < 0.38) patternType = 'INDECISION';
+    if (randPattern < 0.18) patternType = 'ENGULFING';
+    else if (randPattern < 0.30) patternType = 'PIN_BAR';
+    else if (randPattern < 0.40) patternType = 'INDECISION';
     else if (isLiquiditySweep) patternType = 'LIQUIDITY_SWEEP';
   } else if (mgr.state === 'Range') {
     const baseMid = BASE_MID_PRICES[symbol] || currentPrice;
-    const rangeBound = baseMid * 0.0018;
+    const rangeBound = baseMid * 0.0016;
 
     if (currentPrice >= (mgr.rangeMidPrice || baseMid) + rangeBound) {
-      candleBias = Math.random() < 0.80 ? -1 : 1;
+      candleBias = Math.random() < 0.82 ? -1 : 1;
     } else if (currentPrice <= (mgr.rangeMidPrice || baseMid) - rangeBound) {
-      candleBias = Math.random() < 0.80 ? 1 : -1;
+      candleBias = Math.random() < 0.82 ? 1 : -1;
     } else {
       candleBias = Math.random() < 0.50 ? 1 : -1;
     }
-    driftMultiplier = 0.5 + Math.random() * 0.4;
+    driftMultiplier = 0.4 + Math.random() * 0.3;
 
     const randPattern = Math.random();
-    if (randPattern < 0.25) patternType = 'INDECISION';
-    else if (randPattern < 0.45) patternType = 'PIN_BAR';
+    if (randPattern < 0.30) patternType = 'INDECISION';
+    else if (randPattern < 0.50) patternType = 'PIN_BAR';
     else if (isLiquiditySweep) patternType = 'LIQUIDITY_SWEEP';
   } else if (mgr.state === 'Breakout') {
     const bDir = mgr.mainDirection !== 0 ? mgr.mainDirection : 1;
-    if (mgr.subPhase === 'Consolidation') {
-      candleBias = Math.random() < 0.50 ? 1 : -1;
-      driftMultiplier = 0.4 + Math.random() * 0.3;
-      patternType = Math.random() < 0.30 ? 'INDECISION' : 'NORMAL';
-    } else if (mgr.subPhase === 'Breakout') {
+    if (mgr.subPhase === 'Breakout') {
       candleBias = bDir;
-      driftMultiplier = 2.5 + Math.random() * 1.5;
+      driftMultiplier = 1.6 + Math.random() * 0.6;
       patternType = 'ENGULFING';
     } else if (mgr.subPhase === 'Retest') {
       candleBias = -bDir;
-      driftMultiplier = 0.8 + Math.random() * 0.4;
+      driftMultiplier = 0.6 + Math.random() * 0.3;
       patternType = 'PIN_BAR';
     } else {
       candleBias = Math.random() < 0.80 ? bDir : -bDir;
-      driftMultiplier = 1.6 + Math.random() * 0.8;
+      driftMultiplier = 1.2 + Math.random() * 0.5;
     }
   }
 
@@ -636,10 +665,53 @@ function simulate1mCandleViaTicks(
     if (currentPrice < lowPrice) lowPrice = currentPrice;
   }
 
-  const open = Number(openPrice.toFixed(decimals));
-  const close = Number(currentPrice.toFixed(decimals));
-  const high = Number(Math.max(highPrice, open, close).toFixed(decimals));
-  const low = Number(Math.min(lowPrice, open, close).toFixed(decimals));
+  let open = Number(openPrice.toFixed(decimals));
+  let close = Number(currentPrice.toFixed(decimals));
+  let high = Number(Math.max(highPrice, open, close).toFixed(decimals));
+  let low = Number(Math.min(lowPrice, open, close).toFixed(decimals));
+
+  // Cap maximum 1m candle range to prevent flash-crash style movements
+  const maxAllowedCandleRange = symbol === 'BTCUSD' ? 120.0 : symbol === 'XAUUSD' ? 2.80 : symbol === 'USDJPY' ? 0.18 : 0.00080;
+  let totalRange = high - low;
+
+  if (totalRange > maxAllowedCandleRange) {
+    const scale = maxAllowedCandleRange / totalRange;
+    const mid = (high + low) / 2;
+    high = Number((mid + (high - mid) * scale).toFixed(decimals));
+    low = Number((mid - (mid - low) * scale).toFixed(decimals));
+    open = Number((mid + (open - mid) * scale).toFixed(decimals));
+    close = Number((mid + (close - mid) * scale).toFixed(decimals));
+    totalRange = high - low;
+  }
+
+  // Enforce realistic body relative to wicks based on pattern type
+  if (patternType === 'NORMAL' || patternType === 'ENGULFING') {
+    // Normal / Engulfing: body should be 50%-75% of total range
+    const minBody = totalRange * (patternType === 'ENGULFING' ? 0.65 : 0.48);
+    let currentBody = Math.abs(close - open);
+    if (currentBody < minBody && totalRange > 0) {
+      const dir = close >= open ? 1 : -1;
+      close = Number((open + dir * minBody).toFixed(decimals));
+      high = Number(Math.max(high, open, close).toFixed(decimals));
+      low = Number(Math.min(low, open, close).toFixed(decimals));
+    }
+  } else if (patternType === 'PIN_BAR') {
+    // Pin Bar: body should be small (<25% of range), wick should be long (65%-80% of range)
+    const maxBody = totalRange * 0.22;
+    let currentBody = Math.abs(close - open);
+    if (currentBody > maxBody && totalRange > 0) {
+      const dir = close >= open ? 1 : -1;
+      close = Number((open + dir * maxBody).toFixed(decimals));
+    }
+  } else if (patternType === 'INDECISION') {
+    // Indecision / Doji: body < 15% of range
+    const maxBody = totalRange * 0.12;
+    let currentBody = Math.abs(close - open);
+    if (currentBody > maxBody && totalRange > 0) {
+      const dir = close >= open ? 1 : -1;
+      close = Number((open + dir * maxBody).toFixed(decimals));
+    }
+  }
 
   const priceRange = Math.abs(close - open) + (high - low);
   const volBase = symbol === 'BTCUSD' ? 50 : symbol === 'XAUUSD' ? 300 : 500;
@@ -935,6 +1007,8 @@ export async function initializeCandleEngine() {
 
       if (active1mBlockTime > last1m.time) {
         // 1m timeframe duration (60s) crossed -> close previous 1m candle, open new 1m candle
+        notifyCandleCloseForSpike(symbol);
+
         const maxAllowed = 14400; // 10 days of 1m candles
         if (m1Candles.length >= maxAllowed) {
           m1Candles.shift();

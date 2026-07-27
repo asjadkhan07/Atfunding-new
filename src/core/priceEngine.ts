@@ -1,3 +1,5 @@
+import { processSpikeTickDelta, getStabilizationFactor } from './spikeEngine';
+
 export const DECIMAL_PLACES: Record<string, number> = {
   // Forex
   EURUSD: 5,
@@ -115,38 +117,38 @@ export const symbolTrendState: Record<string, SymbolTrend> = {};
 const PRICE_STATE_KEY = 'atfunding_price_engine_state_v10';
 const TREND_STATE_KEY = 'atfunding_trend_engine_state_v10';
 
-// Calibrated step configs for per-symbol ATR-style volatility
+// Calibrated step configs for per-symbol realistic forex market tick steps
 export const TICK_STEP_MAP: Record<string, { baseStep: number; maxStep: number }> = {
-  // Forex Majors & Crosses (Avg body: 3 to 15 pips = 0.00030 to 0.00150)
-  EURUSD: { baseStep: 0.000055, maxStep: 0.00028 },
-  GBPUSD: { baseStep: 0.000070, maxStep: 0.00035 },
-  AUDUSD: { baseStep: 0.000050, maxStep: 0.00025 },
-  NZDUSD: { baseStep: 0.000050, maxStep: 0.00025 },
-  USDCAD: { baseStep: 0.000060, maxStep: 0.00030 },
-  USDCHF: { baseStep: 0.000060, maxStep: 0.00030 },
-  EURGBP: { baseStep: 0.000045, maxStep: 0.00022 },
+  // Forex Majors & Crosses (Avg pip step: 0.1 to 0.3 pips per tick, max 0.6 pips)
+  EURUSD: { baseStep: 0.000015, maxStep: 0.00006 },
+  GBPUSD: { baseStep: 0.000020, maxStep: 0.00008 },
+  AUDUSD: { baseStep: 0.000015, maxStep: 0.00006 },
+  NZDUSD: { baseStep: 0.000015, maxStep: 0.00006 },
+  USDCAD: { baseStep: 0.000015, maxStep: 0.00006 },
+  USDCHF: { baseStep: 0.000015, maxStep: 0.00006 },
+  EURGBP: { baseStep: 0.000012, maxStep: 0.00005 },
 
-  // JPY Crosses (Avg body: 5 to 35 pips / sen = 0.05 to 0.35 yen)
-  USDJPY: { baseStep: 0.012,    maxStep: 0.060 },
-  EURJPY: { baseStep: 0.015,    maxStep: 0.075 },
-  GBPJPY: { baseStep: 0.018,    maxStep: 0.090 },
+  // JPY Crosses (Avg sen step: 0.3 to 0.5 sen, max 1.8 sen)
+  USDJPY: { baseStep: 0.003,    maxStep: 0.015 },
+  EURJPY: { baseStep: 0.004,    maxStep: 0.018 },
+  GBPJPY: { baseStep: 0.005,    maxStep: 0.022 },
 
-  // Metals (Gold avg body: $0.50 to $5.00, expansion moves: $5.00 to $30.00)
-  XAUUSD: { baseStep: 0.38,     maxStep: 2.20 },
-  XAGUSD: { baseStep: 0.028,    maxStep: 0.15 },
+  // Metals (Gold avg per-tick move: $0.08 to $0.35/oz)
+  XAUUSD: { baseStep: 0.08,     maxStep: 0.35 },
+  XAGUSD: { baseStep: 0.005,    maxStep: 0.025 },
 
-  // Energy (Avg body: $0.10 to $0.80)
-  USOIL:  { baseStep: 0.045,    maxStep: 0.22 },
-  UKOIL:  { baseStep: 0.045,    maxStep: 0.22 },
+  // Energy (Avg per-tick move: $0.01 to $0.05)
+  USOIL:  { baseStep: 0.012,    maxStep: 0.05 },
+  UKOIL:  { baseStep: 0.012,    maxStep: 0.05 },
 
-  // Indices (Avg body: 5 to 100 points)
-  NAS100: { baseStep: 3.2,      maxStep: 18.0 },
-  US30:   { baseStep: 4.5,      maxStep: 25.0 },
-  SPX500: { baseStep: 0.70,     maxStep: 4.20 },
+  // Indices (Avg per-tick move: 0.15 to 0.90 points)
+  NAS100: { baseStep: 0.65,     maxStep: 3.20 },
+  US30:   { baseStep: 0.90,     maxStep: 4.50 },
+  SPX500: { baseStep: 0.15,     maxStep: 0.80 },
 
-  // Crypto (BTC body: $20 to $200 avg, $200-$1200 expansion; ETH body: $2 to $25)
-  BTCUSD: { baseStep: 14.5,     maxStep: 75.0 },
-  ETHUSD: { baseStep: 1.4,      maxStep: 7.50 },
+  // Crypto (BTC avg per-tick move: $3.5 to $22.0; ETH: $0.35 to $2.2)
+  BTCUSD: { baseStep: 3.50,     maxStep: 22.0 },
+  ETHUSD: { baseStep: 0.35,     maxStep: 2.20 },
 };
 
 export function getMaxSameDirectionTicks(symbol: string): number {
@@ -369,21 +371,21 @@ function triggerTickFluctuation() {
     if (currentTrend.subPhase === 'Pullback') {
       // Pullback direction: counter to main trend to retrace 20%-60%
       tickDirection = Math.random() < 0.78 ? -mainDir : mainDir;
-      driftMultiplier = 1.2;
+      driftMultiplier = 0.9;
     } else if (currentTrend.state === 'Trending Up') {
       tickDirection = Math.random() < 0.75 ? 1 : -1;
-      driftMultiplier = 1.6;
+      driftMultiplier = 1.1;
     } else if (currentTrend.state === 'Trending Down') {
       tickDirection = Math.random() < 0.75 ? -1 : 1;
-      driftMultiplier = 1.6;
+      driftMultiplier = 1.1;
     } else if (currentTrend.state === 'Breakout') {
       const bDir = currentTrend.mainDirection !== 0 ? currentTrend.mainDirection : 1;
       tickDirection = Math.random() < 0.82 ? bDir : -bDir;
-      driftMultiplier = 2.5;
+      driftMultiplier = 1.4;
     } else {
       // Range: 50% up / 50% down
       tickDirection = Math.random() < 0.50 ? 1 : -1;
-      driftMultiplier = 0.6;
+      driftMultiplier = 0.7;
     }
 
     // Track consecutive same direction ticks
@@ -394,8 +396,8 @@ function triggerTickFluctuation() {
       currentTrend.consecutiveSameTicks = 1;
     }
 
-    // Step size magnitude
-    const randomNoiseFactor = 0.4 + Math.random() * 1.2;
+    // Step size magnitude: smooth realistic noise factor
+    const randomNoiseFactor = 0.6 + Math.random() * 0.6;
     const volFactor = sessMult * driftMultiplier;
 
     let stepMagnitude = stepConfig.baseStep * randomNoiseFactor * volFactor;
@@ -411,14 +413,20 @@ function triggerTickFluctuation() {
       }
     }
 
-    const tickDelta = tickDirection * stepMagnitude;
-    const clampedDelta = Math.max(-stepConfig.maxStep, Math.min(stepConfig.maxStep, tickDelta));
+    const tickDelta = tickDirection * stepMagnitude * getStabilizationFactor(symbol);
+    const clampedDelta = Math.max(-stepConfig.maxStep * 2, Math.min(stepConfig.maxStep * 2, tickDelta));
 
     let newMid = Number((state.last + clampedDelta).toFixed(decimals));
 
-    const minAllowed = Number((baseMid * 0.95).toFixed(decimals));
-    const maxAllowed = Number((baseMid * 1.05).toFixed(decimals));
-    newMid = Math.max(minAllowed, Math.min(maxAllowed, newMid));
+    // Check for active Admin Candle Spike
+    const spikeOverride = processSpikeTickDelta(symbol, state.last);
+    if (spikeOverride !== null && !isNaN(spikeOverride)) {
+      newMid = Number(spikeOverride.toFixed(decimals));
+    } else {
+      const minAllowed = Number((baseMid * 0.90).toFixed(decimals));
+      const maxAllowed = Number((baseMid * 1.10).toFixed(decimals));
+      newMid = Math.max(minAllowed, Math.min(maxAllowed, newMid));
+    }
 
     const changePct = Number((((newMid - baseMid) / baseMid) * 100).toFixed(2));
 
@@ -441,8 +449,8 @@ let tickTimeoutId: any = null;
 
 function scheduleNextTick() {
   if (!isRunning) return;
-  // Generate ticks every 250ms–1000ms random interval
-  const nextInterval = Math.floor(250 + Math.random() * 750);
+  // Generate realistic forex ticks every 1200ms–2800ms random interval (~2 seconds)
+  const nextInterval = Math.floor(1200 + Math.random() * 1600);
   tickTimeoutId = setTimeout(() => {
     triggerTickFluctuation();
     scheduleNextTick();

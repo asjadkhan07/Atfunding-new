@@ -1,6 +1,7 @@
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { priceEngineState } from './priceEngine';
+import { addLocalOpenPosition } from './positionEngine';
 
 export interface OrderInput {
   accountId: string;
@@ -116,6 +117,9 @@ export async function executeOrder(input: OrderInput): Promise<OrderExecutionRes
     const docRef = doc(db, 'trades', tradeId);
     await setDoc(docRef, newTradePayload);
     
+    // Instantly update position engine local memory so UI displays open trade immediately
+    addLocalOpenPosition(newTradePayload);
+
     return {
       success: true,
       message: `Order Executed! Entered ${direction.toUpperCase()} ${symbol} at $${entryPrice}`,
