@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   TrendingUp, Layers, Gift, DollarSign, Award, Ticket, 
-  User, Settings, LogOut, Check, AlertCircle, Users, 
+  User, Settings, LogOut, Check, AlertCircle, AlertTriangle, Users, 
   Share2, FileText, ExternalLink, RefreshCw, ChevronDown, Key,
   ShieldCheck, Upload, Loader2, Coins, ShoppingBag, ListTodo, Copy, Zap, Clock
 } from 'lucide-react';
@@ -11,7 +11,8 @@ import { CHALLENGE_PACKAGES } from '../constants';
 import { db, auth, handleFirestoreError, OperationType, storage } from '../firebase';
 import { firebaseTelemetry } from '../firebaseTelemetry';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { collection, query, where, getDocs, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, setDoc, updateDoc, onSnapshot, getDoc, limit } from 'firebase/firestore';
+import { getDocsCached } from '../lib/firestoreCache';
 
 // Subcomponents
 import BuyAccountPanel from './BuyAccountPanel';
@@ -56,6 +57,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   const [kycSubmitting, setKycSubmitting] = useState(false);
   const [kycError, setKycError] = useState('');
   const [kycSuccess, setKycSuccess] = useState('');
+  const [isQuotaExceeded, setIsQuotaExceeded] = useState<boolean>(false);
 
   // KYC Selected Files
   const [selectedDocType, setSelectedDocType] = useState<string>('Passport');
@@ -90,11 +92,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     if (!user.uid) return;
 
     // 1. Tasks
-    const unsubTasks = onSnapshot(collection(db, 'tasks'), (snap) => {
-      const list: any[] = [];
-      snap.forEach(d => list.push(d.data()));
-      setTasks(list);
-    });
+    getDocsCached('trader_tasks', async () => {
+      const snap = await getDocs(query(collection(db, 'tasks'), limit(50)));
+      return snap.docs.map(d => d.data());
+    }).then(res => setTasks(res)).catch(e => console.warn(e));
 
     // 2. Submissions
     const unsubSubmissions = onSnapshot(
@@ -107,11 +108,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     );
 
     // 3. Reward Store Builder listings
-    const unsubRewardStore = onSnapshot(collection(db, 'reward_store'), (snap) => {
-      const list: any[] = [];
-      snap.forEach(d => list.push(d.data()));
-      setRewardStore(list);
-    });
+    getDocsCached('trader_reward_store', async () => {
+      const snap = await getDocs(query(collection(db, 'reward_store'), limit(50)));
+      return snap.docs.map(d => d.data());
+    }).then(res => setRewardStore(res)).catch(e => console.warn(e));
 
     // 4. Redemptions Hub Claims
     const unsubRedemptions = onSnapshot(
@@ -124,11 +124,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     );
 
     // 5. Custom platform social links
-    const unsubCustomLinks = onSnapshot(collection(db, 'custom_links'), (snap) => {
-      const list: any[] = [];
-      snap.forEach(d => list.push(d.data()));
-      setCustomLinks(list);
-    });
+    getDocsCached('trader_custom_links', async () => {
+      const snap = await getDocs(query(collection(db, 'custom_links'), limit(50)));
+      return snap.docs.map(d => d.data());
+    }).then(res => setCustomLinks(res)).catch(e => console.warn(e));
 
     // 6. Coin transactions history logs
     const unsubCoins = onSnapshot(
@@ -155,11 +154,8 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     );
 
     return () => {
-      unsubTasks();
       unsubSubmissions();
-      unsubRewardStore();
       unsubRedemptions();
-      unsubCustomLinks();
       unsubCoins();
       unsubXP();
     };
@@ -485,7 +481,22 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   useEffect(() => {
     if (!user?.uid) return;
 
-    const myCodes = [user.uid, user.affiliateCode].filter(Boolean);
+    // Build comprehensive list of possible code keys for this affiliate user
+    const rawKeys = [
+      user.uid,
+      user.affiliateCode,
+      affiliate?.code,
+      user.username,
+      user.email ? user.email.split('@')[0] : ''
+    ].filter(Boolean) as string[];
+
+    const myCodeKeysSet = new Set<string>();
+    rawKeys.forEach(k => {
+      myCodeKeysSet.add(k);
+      myCodeKeysSet.add(k.toLowerCase());
+      myCodeKeysSet.add(k.toUpperCase());
+    });
+    const myCodes = Array.from(myCodeKeysSet);
 
     // 1. Listen to link clicks / taps
     const unsubStatsList: (() => void)[] = [];
@@ -495,8 +506,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       const unsub = onSnapshot(doc(db, 'referral_stats', codeKey), (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data();
-          combinedClicks += data.clicks || 0;
-          setTotalTaps(combinedClicks);
+          if ((data.clicks || 0) > combinedClicks) {
+            combinedClicks = data.clicks;
+            setTotalTaps(combinedClicks);
+          }
         }
       }, err => console.warn("Error listening to referral_stats:", err));
       unsubStatsList.push(unsub);
@@ -504,7 +517,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       const unsubAff = onSnapshot(doc(db, 'affiliates', codeKey), (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.data();
-          if (data.clicks && data.clicks > combinedClicks) {
+          if ((data.clicks || 0) > combinedClicks) {
             combinedClicks = data.clicks;
             setTotalTaps(combinedClicks);
           }
@@ -513,15 +526,18 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       unsubStatsList.push(unsub);
     });
 
-    // 2. Listen to users who were referred by this user (check referredBy == user.uid and referredBy == user.affiliateCode)
+    // 2. Real-time listener for users referred by this user's affiliate keys
     const unsubUsersList: (() => void)[] = [];
     const userMap = new Map<string, any>();
+    const referredUserIdsSet = new Set<string>();
 
-    myCodes.forEach((codeKey) => {
+    myCodes.slice(0, 8).forEach((codeKey) => {
       const q = query(collection(db, 'users'), where('referredBy', '==', codeKey));
       const unsub = onSnapshot(q, (snapshot) => {
         snapshot.forEach((docSnap) => {
+          if (docSnap.id === user.uid) return;
           userMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
+          referredUserIdsSet.add(docSnap.id);
         });
         const list = Array.from(userMap.values());
         list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
@@ -531,20 +547,21 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       unsubUsersList.push(unsub);
     });
 
-    // 3. Listen to approved orders referred by this user
+    // 3. Real-time listener for approved orders referred by this user
     const unsubOrdersList: (() => void)[] = [];
     const orderMap = new Map<string, number>();
 
-    myCodes.forEach((codeKey) => {
+    myCodes.slice(0, 8).forEach((codeKey) => {
       const ordersQuery = query(
         collection(db, 'orders'),
-        where('referredBy', '==', codeKey),
-        where('status', '==', 'Approved')
+        where('referredBy', '==', codeKey)
       );
       const unsub = onSnapshot(ordersQuery, (ordersSnapshot) => {
         ordersSnapshot.forEach((docSnap) => {
           const orderData = docSnap.data();
-          orderMap.set(docSnap.id, orderData.price || 0);
+          if (orderData.status === 'Approved') {
+            orderMap.set(docSnap.id, Number(orderData.finalPrice) || Number(orderData.price) || 0);
+          }
         });
         let sum = 0;
         orderMap.forEach((price) => sum += price);
@@ -559,7 +576,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       unsubUsersList.forEach(u => u());
       unsubOrdersList.forEach(u => u());
     };
-  }, [user?.uid, user?.affiliateCode]);
+  }, [user?.uid, user?.affiliateCode, affiliate?.code]);
 
   // Referral Withdrawals State & Subscription
   const [myRefWithdrawals, setMyRefWithdrawals] = useState<ReferralWithdrawal[]>([]);
@@ -586,11 +603,26 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   // Real-time affiliate commissions subscription
   useEffect(() => {
     if (!user?.uid) return;
-    const myCodes = [user.uid, user.affiliateCode].filter(Boolean);
-    const unsubList: (() => void)[] = [];
+    const rawKeys = [
+      user.uid,
+      user.affiliateCode,
+      affiliate?.code,
+      user.username,
+      user.email ? user.email.split('@')[0] : ''
+    ].filter(Boolean) as string[];
+
+    const myCodeKeysSet = new Set<string>();
+    rawKeys.forEach(k => {
+      myCodeKeysSet.add(k);
+      myCodeKeysSet.add(k.toLowerCase());
+      myCodeKeysSet.add(k.toUpperCase());
+    });
+    const myCodes = Array.from(myCodeKeysSet);
+
+    const unsubCommList: (() => void)[] = [];
     const commMap = new Map<string, any>();
 
-    myCodes.forEach(codeKey => {
+    myCodes.slice(0, 8).forEach((codeKey) => {
       const q = query(collection(db, 'affiliate_commissions'), where('affiliateId', '==', codeKey));
       const unsub = onSnapshot(q, (snapshot) => {
         snapshot.forEach(d => commMap.set(d.id, { id: d.id, ...d.data() }));
@@ -598,11 +630,11 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
         list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
         setCommissionsList(list);
       }, err => console.warn("Error listening to affiliate commissions:", err));
-      unsubList.push(unsub);
+      unsubCommList.push(unsub);
     });
 
-    return () => unsubList.forEach(u => u());
-  }, [user?.uid, user?.affiliateCode]);
+    return () => unsubCommList.forEach(u => u());
+  }, [user?.uid, user?.affiliateCode, affiliate?.code]);
 
   const totalEarnedCommissions = commissionsList.reduce((acc, c) => acc + (Number(c.commissionAmount) || 0), 0) || totalEarnings;
   const withdrawnEarnings = myRefWithdrawals.filter(w => w.status === 'Paid' || w.status === 'Approved').reduce((acc, w) => acc + (w.amount || 0), 0);
@@ -683,6 +715,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
         setSelectedAccount(null);
       }
     }, (error) => {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
+        setIsQuotaExceeded(true);
+      }
       handleFirestoreError(error, OperationType.LIST, 'accounts');
     });
 
@@ -698,6 +734,11 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   const fetchUserData = async () => {
     if (!user?.uid) return;
 
+    const isQuotaOrOfflineErr = (msg: string) => {
+      const m = msg.toLowerCase();
+      return m.includes('offline') || m.includes('failed to get document') || m.includes('insufficient permissions') || m.includes('quota') || m.includes('exceeded') || m.includes('resource-exhausted');
+    };
+
     // 1. Fetch Payouts
     try {
       const payoutsSnap = await getDocs(query(collection(db, 'payouts'), where('userId', '==', user.uid)));
@@ -706,21 +747,26 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       setPayouts(fetchedPayouts);
     } catch (e: any) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.toLowerCase().includes('offline') || errMsg.toLowerCase().includes('failed to get document') || errMsg.toLowerCase().includes('insufficient permissions')) {
+      if (isQuotaOrOfflineErr(errMsg)) {
         console.warn("Firestore warning for payouts list:", errMsg);
       } else {
         console.error("Error fetching payouts:", e);
       }
     }
 
-    // 2. Fetch Affiliate info
+    // 2. Fetch Affiliate info & keep affiliateCode in sync across users and affiliates collections
     try {
       const affiliateSnap = await getDoc(doc(db, 'affiliates', user.uid));
       if (affiliateSnap.exists()) {
-        setAffiliate(affiliateSnap.data() as Affiliate);
+        const affData = affiliateSnap.data() as Affiliate;
+        setAffiliate(affData);
+        // Sync affiliate code back to user document if missing or different
+        if (affData.code && user.affiliateCode !== affData.code) {
+          await updateDoc(doc(db, 'users', user.uid), { affiliateCode: affData.code }).catch(() => {});
+        }
       } else {
         // Create initial affiliate metrics
-        const code = user.email.split('@')[0] + Math.floor(100 + Math.random() * 900);
+        const code = user.affiliateCode || (user.email ? user.email.split('@')[0] : 'trader') + Math.floor(100 + Math.random() * 900);
         const initialAff: Affiliate = {
           userId: user.uid,
           code: code,
@@ -729,12 +775,13 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
           unpaidBalance: 0,
           totalEarned: 0
         };
-        await setDoc(doc(db, 'affiliates', user.uid), initialAff);
+        await setDoc(doc(db, 'affiliates', user.uid), initialAff, { merge: true });
+        await updateDoc(doc(db, 'users', user.uid), { affiliateCode: code }).catch(() => {});
         setAffiliate(initialAff);
       }
     } catch (e: any) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.toLowerCase().includes('offline') || errMsg.toLowerCase().includes('failed to get document') || errMsg.toLowerCase().includes('insufficient permissions')) {
+      if (isQuotaOrOfflineErr(errMsg)) {
         console.warn("Firestore warning for affiliate info:", errMsg);
       } else {
         console.error("Error fetching/setting affiliate:", e);
@@ -749,7 +796,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       setCertificates(fetchedCerts);
     } catch (e: any) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.toLowerCase().includes('offline') || errMsg.toLowerCase().includes('failed to get document') || errMsg.toLowerCase().includes('insufficient permissions')) {
+      if (isQuotaOrOfflineErr(errMsg)) {
         console.warn("Firestore warning for certificates list:", errMsg);
       } else {
         console.error("Error fetching certificates:", e);
@@ -764,11 +811,22 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     const formattedCode = affiliateCodeInput.trim().toUpperCase();
 
     try {
-      await updateDoc(doc(db, 'affiliates', user.uid), { code: formattedCode });
+      await setDoc(doc(db, 'affiliates', user.uid), {
+        userId: user.uid,
+        code: formattedCode,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      await updateDoc(doc(db, 'users', user.uid), {
+        affiliateCode: formattedCode
+      });
+
+      setAffiliate(prev => prev ? { ...prev, code: formattedCode } : { userId: user.uid, code: formattedCode, clicks: 0, referrals: 0, unpaidBalance: 0, totalEarned: 0 });
+      setAffiliateCodeInput('');
       setAffiliateMsg("Affiliate link code updated successfully!");
       fetchUserData();
     } catch (e) {
-      console.error(e);
+      console.error("Error updating affiliate code:", e);
       setAffiliateMsg("Error updating affiliate code.");
     }
   };
@@ -1018,6 +1076,26 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
 
       {/* Main Content Pane */}
       <main className="flex-1 bg-[#020617] p-6 sm:p-10 overflow-y-auto space-y-8 relative z-10">
+        
+        {isQuotaExceeded && (
+          <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-3 text-amber-200 text-sm">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <div className="font-bold text-amber-300">Firebase Daily Read Quota Reached</div>
+              <p className="text-xs text-amber-200/80 leading-relaxed">
+                Your trading account records, challenge status, payouts, and transaction data remain <strong>100% safe and intact in Firestore</strong>. Read queries are temporarily paused by Google Cloud until daily free limits reset, or until quota is managed in the Firebase Console.
+              </p>
+              <a 
+                href="https://console.firebase.google.com/project/gen-lang-client-0674008062/firestore/databases/ai-studio-atfunding-572fc147-1cbf-4a6b-9c9c-3af639e06bcc/data?openUpgradeDialog=true"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs text-amber-300 font-medium underline hover:text-amber-100 mt-1"
+              >
+                Manage Quota in Firebase Console <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          </div>
+        )}
         
         {/* OVERVIEW TAB */}
         {activeTab === 'overview' && (
@@ -1705,13 +1783,13 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                     
                     <div className="p-4 bg-black/50 rounded-2xl border border-white/10 text-xs text-blue-300 font-mono flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 break-all">
                       <span className="text-amber-300 font-bold text-xs select-all">
-                        {`${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`}
+                        {`${window.location.origin}/?ref=${affiliate?.code || user.affiliateCode || user.uid}&action=signup`}
                       </span>
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
                           onClick={() => {
-                            const link = `${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`;
+                            const link = `${window.location.origin}/?ref=${affiliate?.code || user.affiliateCode || user.uid}&action=signup`;
                             navigator.clipboard.writeText(link);
                             setCopyLinkFeedback(true);
                             setTimeout(() => setCopyLinkFeedback(false), 2000);
@@ -1726,7 +1804,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                           <button
                             type="button"
                             onClick={() => {
-                              const link = `${window.location.origin}/?ref=${user.affiliateCode || user.uid}&action=signup`;
+                              const link = `${window.location.origin}/?ref=${affiliate?.code || user.affiliateCode || user.uid}&action=signup`;
                               navigator.share({
                                 title: 'ATFunding Referral Code',
                                 text: 'Join ATFunding simulated prop trading challenge!',
@@ -1743,7 +1821,7 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
 
                     <div className="flex items-center gap-3 text-[11px] text-slate-400 pt-1">
                       <span className="text-slate-300 font-semibold">Your Affiliate Code:</span>
-                      <code className="px-2.5 py-0.5 bg-white/10 rounded font-mono font-bold text-amber-300 text-xs">{user.affiliateCode || user.uid}</code>
+                      <code className="px-2.5 py-0.5 bg-white/10 rounded font-mono font-bold text-amber-300 text-xs">{affiliate?.code || user.affiliateCode || user.uid}</code>
                     </div>
                   </div>
                 </div>

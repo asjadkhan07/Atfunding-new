@@ -3,7 +3,7 @@ import * as LucideIcons from 'lucide-react';
 import { 
   Users, Layers, DollarSign, Award, Gift, Ticket, ListFilter, Check, X, Plus, Trash2, Shield, RefreshCw,
   Coins, Search, Filter, Image as ImageIcon, AlertTriangle, AlertCircle, Eye, HelpCircle, Mail, MessageSquare, Settings,
-  Activity, Clock, Tag, Share2, Bell, Edit3, Upload, FileText, Send, Download, Sparkles, Sliders
+  Activity, Clock, Tag, Share2, Bell, Edit3, Upload, FileText, Send, Download, Sparkles, Sliders, ExternalLink
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -369,6 +369,7 @@ export default function AdminPanel() {
   const [manualAmount, setManualAmount] = useState<number>(100);
   const [manualDescription, setManualDescription] = useState<string>('Bonus Coins');
   const [manualActionMsg, setManualActionMsg] = useState<string>('');
+  const [isQuotaExceeded, setIsQuotaExceeded] = useState<boolean>(false);
 
   useEffect(() => {
     setIsLoading(true);
@@ -381,7 +382,16 @@ export default function AdminPanel() {
       setUsers(list);
       setIsLoading(false);
     }, (err) => {
-      console.error("Realtime Users Error:", err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
+        setIsQuotaExceeded(true);
+      }
+      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted') || errMsg.toLowerCase().includes('offline')) {
+        console.warn("Realtime Users Subscription Notice:", errMsg);
+      } else {
+        console.error("Realtime Users Error:", err);
+      }
+      setIsLoading(false);
     });
 
     // BOGO Mappings snapshot
@@ -2111,6 +2121,26 @@ export default function AdminPanel() {
           </button>
         </div>
       </div>
+
+      {isQuotaExceeded && (
+        <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-3 text-amber-200 text-sm">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-bold text-amber-300">Firebase Daily Read Quota Reached</div>
+            <p className="text-xs text-amber-200/80 leading-relaxed">
+              All user records, trading accounts, challenges, payouts, and transactions remain <strong>safe and intact in Firestore</strong>. Real-time reads are temporarily paused by Google Cloud until the daily free tier quota resets, or until quota is upgraded.
+            </p>
+            <a 
+              href="https://console.firebase.google.com/project/gen-lang-client-0674008062/firestore/databases/ai-studio-atfunding-572fc147-1cbf-4a6b-9c9c-3af639e06bcc/data?openUpgradeDialog=true"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-amber-300 font-medium underline hover:text-amber-100 mt-1"
+            >
+              Manage Quota in Firebase Console <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          </div>
+        </div>
+      )}
 
       {/* Admin NavTabs */}
       <div className="flex bg-white/5 border border-white/10 rounded-full p-1 max-w-5xl overflow-x-auto scrollbar-none">

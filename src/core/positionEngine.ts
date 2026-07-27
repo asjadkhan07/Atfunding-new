@@ -107,7 +107,12 @@ export function subscribeToPositions(
       syncFloatingPnL();
       notifySubscribers();
     }, (err) => {
-      console.error("Firestore position engine subscription error:", err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
+        console.warn("Firestore position engine subscription quota limit reached:", errMsg);
+      } else {
+        console.error("Firestore position engine subscription error:", err);
+      }
     });
   } else {
     // Immediate callback with cached data

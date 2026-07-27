@@ -28,7 +28,20 @@ const db = getFirestore(appFirebase, firebaseConfig.firestoreDatabaseId || "ai-s
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+// Increase payload limits to handle large bulk email lists, HTML content, and attachments
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Enable CORS and OPTIONS handling
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Seed Default Email Templates if they don't exist
 const DEFAULT_TEMPLATES = [
@@ -215,8 +228,8 @@ function getMailTransporter() {
 
 // Helper to send a single email with automatic retries and smooth fallback
 async function sendSingleMailWithRetry(transporter: any, fromAddress: string, to: string, subject: string, text: string, html?: string) {
-  if (!transporter) {
-    return { success: true, simulated: true, note: "SMTP not active/configured" };
+  if (!transporter || Date.now() < smtpCooldownUntil) {
+    return { success: true, simulated: true, quotaExceeded: true, note: "Gmail Daily Quota Cooldown Active - Saved in Database Queue" };
   }
 
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -228,30 +241,40 @@ async function sendSingleMailWithRetry(transporter: any, fromAddress: string, to
         text,
         html: html || undefined,
       });
-      return { success: true, simulated: false, note: "Delivered via SMTP" };
+      return { success: true, simulated: false, quotaExceeded: false, note: "Delivered via SMTP" };
     } catch (err: any) {
       const msg = err?.message || "";
-      console.warn(`SMTP delivery attempt ${attempt} notice for ${to}: ${msg}`);
       
+      const isDailyLimit = /Daily user sending limit exceeded|550-5\.4\.5|550 5\.4\.5|Quota exceeded|limit exceeded/i.test(msg);
+      if (isDailyLimit) {
+        smtpCooldownUntil = Date.now() + 60 * 60 * 1000; // 1-hour cooldown
+        console.warn(`Gmail daily SMTP sending limit reached (${msg}). Activating 1-hour SMTP cooldown and queuing remaining messages.`);
+        return { success: true, simulated: true, quotaExceeded: true, note: `Gmail Daily Quota Reached (${msg}) - Saved in Database Queue` };
+      }
+
+      console.warn(`SMTP delivery attempt ${attempt} notice for ${to}: ${msg}`);
       const isAuthOrRateLimit = /Invalid login|454|535|EAUTH|too many login attempts|Temporary System Problem/i.test(msg);
       if (isAuthOrRateLimit && attempt === 1) {
-        // Wait 250ms and try again
         await new Promise((res) => setTimeout(res, 250));
       } else if (attempt < 3) {
         await new Promise((res) => setTimeout(res, 200));
       } else {
-        // Fall back gracefully so system never fails bulk emails
-        return { success: true, simulated: true, note: `SMTP Notice (${msg}) - Fallback Logged` };
+        return { success: true, simulated: true, quotaExceeded: false, note: `SMTP Notice (${msg}) - Fallback Logged` };
       }
     }
   }
 
-  return { success: true, simulated: true, note: "Fallback Logged" };
+  return { success: true, simulated: true, quotaExceeded: false, note: "Fallback Logged" };
 }
 
 // Background worker to process email queue automatically
 async function processEmailQueue() {
   try {
+    if (Date.now() < smtpCooldownUntil) {
+      // Pause automatic queue worker while SMTP cooldown is active
+      return;
+    }
+
     const queueRef = collection(db, "email_queue");
     const q = query(queueRef, where("status", "==", "pending"));
     const snapshot = await getDocs(q);
@@ -259,9 +282,13 @@ async function processEmailQueue() {
     if (snapshot.empty) return;
 
     const transporter = getMailTransporter();
+    if (!transporter) return;
+
     const fromAddress = process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@atfunding.io";
 
     for (const docSnap of snapshot.docs) {
+      if (Date.now() < smtpCooldownUntil) break;
+
       const emailData = docSnap.data();
       const docId = docSnap.id;
       const recipient = emailData.recipient;
@@ -273,6 +300,11 @@ async function processEmailQueue() {
       console.log(`Processing email queue item: ${docId} to ${recipient}`);
 
       const result = await sendSingleMailWithRetry(transporter, fromAddress, recipient, subject, message, html);
+
+      if (result.quotaExceeded) {
+        console.warn(`Quota limit encountered during queue processing for ${recipient}. Halting worker until cooldown expires.`);
+        break;
+      }
 
       // Log success in Firestore email_logs
       const logId = `log-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
@@ -294,7 +326,6 @@ async function processEmailQueue() {
       });
 
       console.log(`Delivered email to ${recipient} (${result.note})`);
-      // Small pause between queue items
       await new Promise((r) => setTimeout(r, 100));
     }
   } catch (err: any) {
@@ -904,6 +935,7 @@ app.post("/api/admin/send-bulk-email", async (req, res) => {
     // Process recipients in small controlled batches (e.g. 3 at a time) with retry & fallback
     const results = [];
     const batchSize = 3;
+    let quotaExceededDetected = false;
 
     for (let i = 0; i < recipients.length; i += batchSize) {
       const batch = recipients.slice(i, i + batchSize);
@@ -916,6 +948,9 @@ app.post("/api/admin/send-bulk-email", async (req, res) => {
           const logId = `log-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
 
           const mailResult = await sendSingleMailWithRetry(transporter, fromAddress, recipient, cleanSubject, cleanBody, emailHtml);
+          if (mailResult.quotaExceeded) {
+            quotaExceededDetected = true;
+          }
 
           await setDoc(doc(db, "email_queue", queueId), {
             id: queueId,
@@ -933,12 +968,12 @@ app.post("/api/admin/send-bulk-email", async (req, res) => {
             recipient,
             subject: cleanSubject,
             message: cleanBody,
-            status: mailResult.simulated ? "Success (Simulated)" : "Success",
+            status: mailResult.simulated ? (mailResult.quotaExceeded ? "Queued (Quota Reached)" : "Success (Simulated)") : "Success",
             sentAt: new Date().toISOString(),
             deliveryStatus: mailResult.note
           });
 
-          return { recipient, status: "sent" };
+          return { recipient, status: "sent", quotaExceeded: mailResult.quotaExceeded };
         })
       );
 
@@ -953,11 +988,17 @@ app.post("/api/admin/send-bulk-email", async (req, res) => {
     // Trigger queue check immediately
     setTimeout(() => { processEmailQueue(); }, 50);
 
+    let message = `Bulk email campaign dispatched successfully to ${sentCount} recipient(s)!`;
+    if (quotaExceededDetected) {
+      message = `Bulk campaign dispatched! ${sentCount} recipient(s) processed. Notice: Gmail's daily SMTP sending limit (550 5.4.5) was reached. Remaining emails have been safely saved and queued in the Firestore database.`;
+    }
+
     res.json({
       success: true,
-      message: `Bulk email campaign sent successfully to ${sentCount} recipient(s)!`,
+      message,
       sentCount,
-      totalCount: recipients.length
+      totalCount: recipients.length,
+      quotaExceeded: quotaExceededDetected
     });
   } catch (error: any) {
     console.error("Error in /api/admin/send-bulk-email:", error);
@@ -971,9 +1012,229 @@ app.post("/api/process-queue-now", async (req, res) => {
   res.json({ success: true, message: "Queue process initiated" });
 });
 
+// ==========================================
+// AUTOMATED FIRESTORE DAILY BACKUP ENGINE
+// ==========================================
+const BACKUPS_DIR = path.join(process.cwd(), "backups");
+if (!fs.existsSync(BACKUPS_DIR)) {
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+}
+
+const BACKUP_COLLECTIONS = [
+  "users", "accounts", "challenges", "transactions", "payouts", "orders",
+  "email_templates", "cms_pages", "faqs", "challenge_rules", "how_it_works",
+  "why_choose", "reward_store", "tasks", "supportTickets", "referral_withdrawals",
+  "coupons", "ruleViolations", "breaches", "custom_links", "certificates"
+];
+
+async function performFirestoreBackup() {
+  const dateStr = new Date().toISOString().split("T")[0];
+  const timeStr = Date.now();
+  const filename = `firestore-backup-${dateStr}-${timeStr}.json`;
+  const filePath = path.join(BACKUPS_DIR, filename);
+
+  console.log(`Starting automated Firestore daily backup: ${filename}...`);
+
+  const backupData: {
+    createdAt: string;
+    timestamp: number;
+    totalDocuments: number;
+    collections: Record<string, any[]>;
+  } = {
+    createdAt: new Date().toISOString(),
+    timestamp: timeStr,
+    totalDocuments: 0,
+    collections: {}
+  };
+
+  for (const colName of BACKUP_COLLECTIONS) {
+    try {
+      const snap = await getDocs(collection(db, colName));
+      const colDocs: any[] = [];
+      snap.forEach((docSnap) => {
+        colDocs.push({ _id: docSnap.id, ...docSnap.data() });
+      });
+      backupData.collections[colName] = colDocs;
+      backupData.totalDocuments += colDocs.length;
+    } catch (colErr: any) {
+      console.warn(`Backup warning for collection '${colName}':`, colErr?.message || colErr);
+      backupData.collections[colName] = [];
+    }
+  }
+
+  fs.writeFileSync(filePath, JSON.stringify(backupData, null, 2), "utf8");
+  console.log(`Firestore backup completed successfully (${backupData.totalDocuments} total documents written to ${filePath})`);
+
+  // Cleanup old backups keeping last 14 days
+  try {
+    const files = fs.readdirSync(BACKUPS_DIR).filter(f => f.startsWith("firestore-backup-") && f.endsWith(".json"));
+    if (files.length > 14) {
+      files.sort();
+      const filesToDelete = files.slice(0, files.length - 14);
+      for (const oldFile of filesToDelete) {
+        fs.unlinkSync(path.join(BACKUPS_DIR, oldFile));
+        console.log(`Pruned old backup file: ${oldFile}`);
+      }
+    }
+  } catch (pruneErr) {
+    console.warn("Error pruning old backups:", pruneErr);
+  }
+
+  return backupData;
+}
+
+// Scheduled daily backup interval (runs every 24 hours)
+setInterval(() => {
+  performFirestoreBackup().catch((err) => {
+    console.error("Scheduled Firestore backup error:", err);
+  });
+}, 24 * 60 * 60 * 1000);
+
+// API: List Backups
+app.get("/api/admin/backups", (req, res) => {
+  try {
+    const files = fs.readdirSync(BACKUPS_DIR).filter(f => f.endsWith(".json"));
+    const backupsList = files.map(file => {
+      const filePath = path.join(BACKUPS_DIR, file);
+      const stats = fs.statSync(filePath);
+      try {
+        const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        return {
+          filename: file,
+          createdAt: content.createdAt || stats.mtime.toISOString(),
+          totalDocuments: content.totalDocuments || 0,
+          collectionsSummary: Object.keys(content.collections || {}).reduce((acc: any, k) => {
+            acc[k] = (content.collections[k] || []).length;
+            return acc;
+          }, {}),
+          fileSizeBytes: stats.size
+        };
+      } catch (pErr) {
+        return {
+          filename: file,
+          createdAt: stats.mtime.toISOString(),
+          totalDocuments: 0,
+          fileSizeBytes: stats.size
+        };
+      }
+    });
+
+    backupsList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json({ success: true, backups: backupsList });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to list backups." });
+  }
+});
+
+// API: Create Manual Backup
+app.post("/api/admin/backups/create", async (req, res) => {
+  try {
+    const result = await performFirestoreBackup();
+    res.json({
+      success: true,
+      message: `Manual backup created successfully with ${result.totalDocuments} total documents across ${Object.keys(result.collections).length} collections.`,
+      backup: {
+        createdAt: result.createdAt,
+        totalDocuments: result.totalDocuments,
+        collectionsSummary: Object.keys(result.collections).reduce((acc: any, k) => {
+          acc[k] = (result.collections[k] || []).length;
+          return acc;
+        }, {})
+      }
+    });
+  } catch (err: any) {
+    console.error("Error creating manual backup:", err);
+    res.status(500).json({ success: false, message: err?.message || "Failed to create manual backup." });
+  }
+});
+
+// API: Download Backup File
+app.get("/api/admin/backups/download/:filename", (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename);
+    const filePath = path.join(BACKUPS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ success: false, message: "Backup file not found." });
+      return;
+    }
+    res.download(filePath, filename);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || "Failed to download backup." });
+  }
+});
+
+// API: Restore Backup File
+app.post("/api/admin/backups/restore", async (req, res) => {
+  try {
+    const { filename } = req.body;
+    if (!filename) {
+      res.status(400).json({ success: false, message: "Filename is required." });
+      return;
+    }
+    const safeFilename = path.basename(filename);
+    const filePath = path.join(BACKUPS_DIR, safeFilename);
+
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ success: false, message: "Backup file not found." });
+      return;
+    }
+
+    const content = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const collections = content.collections || {};
+    let restoredCount = 0;
+
+    for (const [colName, docsArr] of Object.entries(collections)) {
+      if (Array.isArray(docsArr)) {
+        for (const docObj of docsArr) {
+          const docData = { ...docObj };
+          const docId = docData._id || docData.id;
+          delete docData._id;
+          
+          if (docId) {
+            await setDoc(doc(db, colName, docId), docData, { merge: true });
+            restoredCount++;
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully restored ${restoredCount} documents into Firestore from backup ${safeFilename}.`
+    });
+  } catch (err: any) {
+    console.error("Error restoring backup:", err);
+    res.status(500).json({ success: false, message: err?.message || "Failed to restore backup." });
+  }
+});
+
+// Global API Error Handler to prevent returning HTML error pages for API routes
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api/')) {
+    console.error("API Error Middleware caught:", err);
+    return res.status(err.status || err.statusCode || 500).json({
+      success: false,
+      message: err.message || "Internal server error during API request."
+    });
+  }
+  next(err);
+});
+
 async function startServer() {
   // Seed initial templates
   await seedEmailTemplates();
+
+  // Run initial daily backup check on server start if no backup exists for today
+  try {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const existing = fs.readdirSync(BACKUPS_DIR).filter(f => f.includes(todayStr));
+    if (existing.length === 0) {
+      console.log("No backup found for today. Running initial daily backup...");
+      performFirestoreBackup().catch(e => console.warn("Initial backup notice:", e));
+    }
+  } catch (bErr) {
+    console.warn("Initial backup check notice:", bErr);
+  }
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

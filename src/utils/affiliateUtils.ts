@@ -93,18 +93,46 @@ export async function processAffiliateCommission(order: any, db: any): Promise<n
       affiliateUid = directUserSnap.id;
       affiliateEmail = directUserSnap.data()?.email || '';
     } else {
-      // 2. Query users by affiliateCode or username
-      const qCode = query(collection(db, 'users'), where('affiliateCode', '==', refCode));
-      const codeSnap = await getDocs(qCode);
+      // 2. Query users by affiliateCode (case insensitive variations)
+      const refUpper = refCode.toUpperCase();
+      const refLower = refCode.toLowerCase();
+
+      let codeSnap = await getDocs(query(collection(db, 'users'), where('affiliateCode', '==', refCode)));
+      if (codeSnap.empty) {
+        codeSnap = await getDocs(query(collection(db, 'users'), where('affiliateCode', '==', refUpper)));
+      }
+      if (codeSnap.empty) {
+        codeSnap = await getDocs(query(collection(db, 'users'), where('affiliateCode', '==', refLower)));
+      }
+
       if (!codeSnap.empty) {
         affiliateUid = codeSnap.docs[0].id;
         affiliateEmail = codeSnap.docs[0].data()?.email || '';
       } else {
-        const qUsername = query(collection(db, 'users'), where('username', '==', refCode));
-        const userSnap = await getDocs(qUsername);
+        // 3. Query users by username
+        let userSnap = await getDocs(query(collection(db, 'users'), where('username', '==', refCode)));
+        if (userSnap.empty) {
+          userSnap = await getDocs(query(collection(db, 'users'), where('username', '==', refLower)));
+        }
         if (!userSnap.empty) {
           affiliateUid = userSnap.docs[0].id;
           affiliateEmail = userSnap.docs[0].data()?.email || '';
+        } else {
+          // 4. Query affiliates collection directly
+          let affSnap = await getDocs(query(collection(db, 'affiliates'), where('code', '==', refCode)));
+          if (affSnap.empty) {
+            affSnap = await getDocs(query(collection(db, 'affiliates'), where('code', '==', refUpper)));
+          }
+          if (affSnap.empty) {
+            affSnap = await getDocs(query(collection(db, 'affiliates'), where('code', '==', refLower)));
+          }
+          if (!affSnap.empty) {
+            affiliateUid = affSnap.docs[0].id;
+            const affUserDoc = await getDoc(doc(db, 'users', affiliateUid));
+            if (affUserDoc.exists()) {
+              affiliateEmail = affUserDoc.data()?.email || '';
+            }
+          }
         }
       }
     }

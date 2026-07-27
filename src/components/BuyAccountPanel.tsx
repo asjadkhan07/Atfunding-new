@@ -7,7 +7,8 @@ import {
 import { CHALLENGE_PACKAGES, ChallengePackage, getAccountDrawdownLimits } from '../constants';
 import RulesCard from './RulesCard';
 import { db, auth, storage, handleFirestoreError, OperationType } from '../firebase';
-import { collection, doc, setDoc, getDoc, onSnapshot, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, onSnapshot, addDoc, query, where, getDocs, limit } from 'firebase/firestore';
+import { getDocsCached } from '../lib/firestoreCache';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Order, PaymentSettings, Coupon } from '../types';
 
@@ -134,20 +135,14 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
       console.warn("Error subscribing to packages config in BuyAccountPanel:", err);
     });
 
-    const unsubWaitlist = onSnapshot(collection(db, 'availability_waitlist'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      setWaitlist(list);
-    }, (err) => {
-      console.warn("Error subscribing to waitlist in BuyAccountPanel:", err);
-    });
+    getDocsCached('buy_waitlist', async () => {
+      const snap = await getDocs(query(collection(db, 'availability_waitlist'), limit(50)));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }).then(res => setWaitlist(res)).catch(e => console.warn(e));
 
     return () => {
       unsubBogoMappings();
       unsubPackages();
-      unsubWaitlist();
     };
   }, []);
 

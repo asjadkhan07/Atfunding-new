@@ -143,15 +143,34 @@ export default function EmailCenter({ users }: EmailCenterProps) {
         })
       });
 
-      const data = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      let data: any = {};
+
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const rawText = await response.text();
+        console.warn('Non-JSON bulk email response:', rawText);
+        // Clean out HTML tags if raw text contains HTML
+        const cleanMessage = rawText.replace(/<[^>]*>?/gm, '').trim();
+        throw new Error(cleanMessage || `Server responded with status ${response.status}`);
+      }
+
       if (!response.ok || !data.success) {
         throw new Error(data.message || 'Failed to dispatch bulk email campaign.');
       }
 
-      setSendMsg({ 
-        type: 'success', 
-        text: data.message || `Successfully sent bulk email to ${recipientList.length} recipient(s) in under 1 second!` 
-      });
+      if (data.quotaExceeded) {
+        setSendMsg({
+          type: 'warning',
+          text: data.message || `Bulk campaign queued! Notice: Gmail's daily SMTP sending limit was reached for some recipients. Emails are safely saved in the Firestore database queue and logs.`
+        });
+      } else {
+        setSendMsg({ 
+          type: 'success', 
+          text: data.message || `Successfully sent bulk email to ${recipientList.length} recipient(s) in under 1 second!` 
+        });
+      }
       
       // Reset form states
       setBulkSubject('');
@@ -252,7 +271,11 @@ export default function EmailCenter({ users }: EmailCenterProps) {
 
           {sendMsg.text && (
             <div className={`p-4 rounded-xl text-xs border ${
-              sendMsg.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+              sendMsg.type === 'success' 
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                : sendMsg.type === 'warning'
+                ? 'bg-amber-500/10 border-amber-500/20 text-amber-300'
+                : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
             }`}>
               {sendMsg.text}
             </div>

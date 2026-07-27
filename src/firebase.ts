@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer, setLogLevel } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, setLogLevel, enableIndexedDbPersistence } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -18,6 +18,17 @@ const app = initializeApp(firebaseConfig);
 // Initialize Services with the custom Firestore Database ID required for this applet
 export const auth = getAuth(app);
 export const db = getFirestore(app, "ai-studio-atfunding-572fc147-1cbf-4a6b-9c9c-3af639e06bcc");
+
+// Enable IndexedDB local cache persistence to drastically reduce Firestore server reads
+if (typeof window !== 'undefined') {
+  enableIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+      // Multiple tabs open, persistence can only be enabled in one tab at a time.
+    } else if (err.code === 'unimplemented') {
+      // Browser doesn't support persistence
+    }
+  });
+}
 
 // Suppress Firestore SDK connectivity/retry warning logs from polluting the console
 try {
@@ -74,6 +85,7 @@ interface FirestoreErrorInfo {
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errMsg = error instanceof Error ? error.message : String(error);
   const isOffline = errMsg.toLowerCase().includes('offline') || errMsg.toLowerCase().includes('failed to get document');
+  const isQuota = errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted');
 
   const errInfo: FirestoreErrorInfo = {
     error: errMsg,
@@ -92,9 +104,9 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     path
   };
 
-  if (isOffline) {
-    console.warn('Firestore (Offline/Connection Warning): ', JSON.stringify(errInfo));
-    // Do not throw when offline to allow local cache/offline workflows to function gracefully without crashing
+  if (isOffline || isQuota) {
+    console.warn(`Firestore (${isQuota ? 'Quota Limit Reached' : 'Offline/Connection Warning'}): `, JSON.stringify(errInfo));
+    // Do not throw when offline or quota-limited to allow local cache workflows to function gracefully without crashing
     return;
   }
 

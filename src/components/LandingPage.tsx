@@ -7,7 +7,8 @@ import {
 import { CHALLENGE_PACKAGES, ChallengePackage } from '../constants';
 import { AccountType, SocialLink } from '../types';
 import { db } from '../firebase';
-import { doc, onSnapshot, collection, query, where, setDoc } from 'firebase/firestore';
+import { doc, collection, query, where, setDoc, getDoc, getDocs, limit } from 'firebase/firestore';
+import { getDocsCached } from '../lib/firestoreCache';
 
 interface LandingPageProps {
   onSelectPackage: (pkg: ChallengePackage) => void;
@@ -54,337 +55,93 @@ export default function LandingPage({
   const [isSubmittingNotify, setIsSubmittingNotify] = useState(false);
 
   useEffect(() => {
-    const unsubBogoMappings = onSnapshot(doc(db, 'settings', 'bogo_mappings'), (snapshot) => {
-      if (snapshot.exists()) {
-        setBogoMappings(snapshot.data().mappings || {});
-      } else {
-        setBogoMappings({});
-      }
-    }, (err) => {
-      console.warn("BOGO mappings subscriber error on LandingPage:", err);
-    });
+    // 1. Settings & BOGO & Packages
+    getDocsCached('landing_settings_bogo', async () => {
+      const snap = await getDoc(doc(db, 'settings', 'bogo_mappings'));
+      return snap.exists() ? [snap.data().mappings || {}] : [{}];
+    }).then(res => setBogoMappings(res[0] || {})).catch(e => console.warn(e));
 
-    const unsubPackages = onSnapshot(doc(db, 'settings', 'packages'), (snapshot) => {
-      if (snapshot.exists()) {
-        setPackagesConfig(snapshot.data());
-      } else {
-        setPackagesConfig({});
-      }
-    }, (err) => {
-      console.warn("Packages subscriber error on LandingPage:", err);
-    });
+    getDocsCached('landing_settings_pkgs', async () => {
+      const snap = await getDoc(doc(db, 'settings', 'packages'));
+      return snap.exists() ? [snap.data()] : [{}];
+    }).then(res => setPackagesConfig(res[0] || {})).catch(e => console.warn(e));
 
-    const unsubWaitlist = onSnapshot(collection(db, 'availability_waitlist'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      setWaitlist(list);
-    }, (err) => {
-      console.warn("Waitlist subscriber error on LandingPage:", err);
-    });
+    getDocsCached('landing_waitlist', async () => {
+      const snap = await getDocs(query(collection(db, 'availability_waitlist'), limit(50)));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }).then(res => setWaitlist(res)).catch(e => console.warn(e));
 
-    return () => {
-      unsubBogoMappings();
-      unsubPackages();
-      unsubWaitlist();
-    };
-  }, []);
-
-  useEffect(() => {
-    const unsubCms = onSnapshot(collection(db, 'cms_pages'), (snapshot) => {
+    // 2. CMS Pages
+    getDocsCached('landing_cms', async () => {
+      const snap = await getDocs(query(collection(db, 'cms_pages'), limit(20)));
       const pages: Record<string, string> = {};
-      snapshot.forEach(doc => {
-        pages[doc.id] = doc.data().content || '';
-      });
-      setCmsPages(pages);
-    }, (err) => {
-      console.warn("CMS pages subscription error in LandingPage:", err);
-    });
-    return () => unsubCms();
-  }, []);
+      snap.forEach(d => { pages[d.id] = d.data().content || ''; });
+      return [pages];
+    }).then(res => setCmsPages(res[0] || {})).catch(e => console.warn(e));
 
-  useEffect(() => {
-    // 1. Subscribe to FAQs
-    const unsubFaqs = onSnapshot(collection(db, 'faqs'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      list.sort((a, b) => (a.order || 0) - (b.order || 0));
-      setFaqsList(list);
+    // 3. FAQs
+    getDocsCached('landing_faqs', async () => {
+      const snap = await getDocs(query(collection(db, 'faqs'), limit(50)));
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+      return list;
+    }).then(res => setFaqsList(res)).catch(e => console.warn(e));
 
-      // Seed if empty
-      if (snapshot.empty) {
-        const defaults = [
-          {
-            question: "What is the Payout Later Challenge?",
-            answer: "The Payout Later Challenge is a unique discounted program starting at just $9 for a $5K account, increasing incrementally by $9 for each level (up to $45 for a $100K account). In exchange for the deep discount, there is a minimum 5-day trading rule, and the initial profit split begins at 50% which scales as you progress.",
-            order: 1
-          },
-          {
-            question: "What is the Instant Bolt program?",
-            answer: "The Instant Bolt program allows direct access to simulated funded capital with no evaluation phase whatsoever. It starts from $1.5K to $9K sizes. Traders are eligible to receive payouts starting as early as week one.",
-            order: 2
-          },
-          {
-            question: "How are drawdown limits calculated?",
-            answer: "Our drawdown limits are calculated based on the starting balance or the daily starting balance at UTC midnight. For example, on a $100K 2-Step challenge, the daily drawdown limit is 5% ($5,000), meaning your equity/balance must not fall below $95,000 on that day.",
-            order: 3
-          },
-          {
-            question: "How fast are payouts processed?",
-            answer: "Our payout approvals are audited in real-time. Once submitted and confirmed, payout disbursements are processed in cryptocurrency (USDT) or bank transfers within 24 hours.",
-            order: 4
-          }
-        ];
-        defaults.forEach(async (faq, idx) => {
-          await setDoc(doc(db, 'faqs', `faq-${idx + 1}`), faq);
-        });
-      }
-    }, (err) => {
-      console.warn("Error loading FAQs:", err);
-    });
-
-    // 2. Subscribe to Challenge Rules
-    const unsubRules = onSnapshot(collection(db, 'challenge_rules'), (snapshot) => {
+    // 4. Challenge Rules
+    getDocsCached('landing_rules', async () => {
+      const snap = await getDocs(collection(db, 'challenge_rules'));
       const rulesObj: Record<string, any> = {};
-      snapshot.forEach(docSnap => {
-        rulesObj[docSnap.id] = docSnap.data();
-      });
-      setChallengeRules(rulesObj);
+      snap.forEach(d => { rulesObj[d.id] = d.data(); });
+      return [rulesObj];
+    }).then(res => setChallengeRules(res[0] || {})).catch(e => console.warn(e));
 
-      // Seed if empty
-      if (snapshot.empty) {
-        const defaultRules = {
-          one_step: {
-            phases: "Single Phase Evaluation",
-            profitTarget: "10% Phase 1",
-            dailyDrawdown: "4% (Balance Based)",
-            maxDrawdown: "8% Overall",
-            minDays: "0 Days",
-            leverage: "1:100",
-            feeStructure: "Standard Fee (Refundable)",
-            payoutInterval: "Bi-Weekly",
-            customRules: "- Minimum trading days: 0 days\n- Consistency rule: None\n- Trading style: Any style allowed (EAs, News, Overnight, Weekend)"
-          },
-          two_step: {
-            phases: "Two Phase Evaluation",
-            profitTarget: "8% Phase 1 / 5% Phase 2",
-            dailyDrawdown: "5% (Equity Based)",
-            maxDrawdown: "10% Overall",
-            minDays: "0 Days",
-            leverage: "1:100",
-            feeStructure: "Standard Fee (Refundable)",
-            payoutInterval: "Bi-Weekly",
-            customRules: "- Dual phase target metrics\n- Consistency rule: None\n- High leverage 1:100 during evaluation and funded phases"
-          },
-          payout_later: {
-            phases: "Single Phase (Discounted)",
-            profitTarget: "8% Phase 1",
-            dailyDrawdown: "3% (Balance Based)",
-            maxDrawdown: "6% Overall",
-            minDays: "5 Trading Days",
-            leverage: "1:50",
-            feeStructure: "Highly Discounted ($9+)",
-            payoutInterval: "Monthly (First Payout)",
-            customRules: "- Deepest discount in the industry\n- Minimum 5 active trading days required\n- Scale up profit splits after successive payouts"
-          },
-          instant_bolt: {
-            phases: "Instant (No Phase)",
-            profitTarget: "No Target",
-            dailyDrawdown: "0.5% (2K/3K) / 1% (6K/9K)",
-            maxDrawdown: "1% (2K/3K) / 2% (6K/9K)",
-            minDays: "0 Days",
-            leverage: "1:30",
-            feeStructure: "Direct Entry Fee",
-            payoutInterval: "Same Day Payout",
-            customRules: "⚡ Instant Bolt Rules:\n- Daily Drawdown: 0.5% (2K/3K) | 1% (6K/9K)\n- Max Drawdown: 1% (2K/3K) | 2% (6K/9K)\n- Profit Target: No Target\n- Profit Split: 80%\n- Max Leverage: 1:30\n- News Trading: Allowed\n- Weekend Holding: Allowed\n- Expert Advisors: Allowed\n- Hedging: Allowed\n- Copy Trading: Not Allowed\n⏱ Minimum Hold Time: 2 Minutes\n⚠ Warning Trigger: After 2 Minutes\n🚫 Maximum Hold Time: 10 Minutes\n❌ 10 Minute Rule Violation: Instant Account Breach"
-          },
-          trial: {
-            phases: "15 Days Duration Trial",
-            profitTarget: "No Profit Target",
-            dailyDrawdown: "5% (Equity Based)",
-            maxDrawdown: "10% Overall",
-            minDays: "0 Days",
-            leverage: "1:100",
-            feeStructure: "₹50 INR Entry",
-            payoutInterval: "N/A (Split: 30%)",
-            customRules: "- 15 days risk-free practice run\n- Try out the full ATTerminal features\n- Pass to practice simulated conditions"
-          }
-        };
-        Object.entries(defaultRules).forEach(async ([id, val]) => {
-          await setDoc(doc(db, 'challenge_rules', id), val);
-        });
-      }
-    }, (err) => {
-      console.warn("Error loading challenge rules:", err);
-    });
+    // 5. How It Works
+    getDocsCached('landing_how_it_works', async () => {
+      const snap = await getDocs(query(collection(db, 'how_it_works'), limit(20)));
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a: any, b: any) => (a.stepNumber || 1) - (b.stepNumber || 1));
+      return list;
+    }).then(res => setHowItWorks(res)).catch(e => console.warn(e));
 
-    // 3. Subscribe to How It Works
-    const unsubHowItWorks = onSnapshot(collection(db, 'how_it_works'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      list.sort((a, b) => (a.stepNumber || 1) - (b.stepNumber || 1));
-      setHowItWorks(list);
+    // 6. Why Choose Us
+    getDocsCached('landing_why_choose', async () => {
+      const snap = await getDocs(query(collection(db, 'why_choose'), limit(20)));
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }).then(res => setWhyChoose(res)).catch(e => console.warn(e));
 
-      // Seed if empty
-      if (snapshot.empty) {
-        const defaults = [
-          {
-            stepNumber: 1,
-            title: "Purchase Account",
-            description: "Choose your preferred evaluation model and account size. Place order safely via cryptocurrency (USDT) checkout.",
-            icon: "ShoppingBag"
-          },
-          {
-            stepNumber: 2,
-            title: "Pass Challenge",
-            description: "Trade according to target parameters, keeping within daily and overall drawdown boundaries. No minimum days.",
-            icon: "Award"
-          },
-          {
-            stepNumber: 3,
-            title: "Get Funded",
-            description: "Once metrics are audited and verified, our system instantly deploys virtual funded credentials to your email.",
-            icon: "Trophy"
-          },
-          {
-            stepNumber: 4,
-            title: "Receive Payout",
-            description: "Trade live simulated capital, claim up to a 90% profit split, and request fast disbursements within 24 hours.",
-            icon: "DollarSign"
-          }
-        ];
-        defaults.forEach(async (step, idx) => {
-          await setDoc(doc(db, 'how_it_works', `step${idx + 1}`), step);
-        });
-      }
-    }, (err) => {
-      console.warn("Error loading how it works:", err);
-    });
+    // 7. General Settings & Social Links
+    getDocsCached('landing_gen_settings', async () => {
+      const snap = await getDoc(doc(db, 'settings', 'general'));
+      return snap.exists() ? [snap.data()] : [{ supportEmail: 'atfundingsupport@gmail.com' }];
+    }).then(res => setSupportEmail(res[0]?.supportEmail || 'atfundingsupport@gmail.com')).catch(e => console.warn(e));
 
-    // 4. Subscribe to Why Choose Us
-    const unsubWhyChoose = onSnapshot(collection(db, 'why_choose'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      setWhyChoose(list);
-
-      // Seed if empty
-      if (snapshot.empty) {
-        const defaults = [
-          {
-            title: "Uncapped Profit Potential",
-            description: "We believe in rewards proportional to skill. Maintain consistent metrics, scale up account sizing, and request payouts with no restrictive thresholds.",
-            icon: "Award"
-          },
-          {
-            title: "No Hidden Restrictions",
-            description: "Clear guidelines. No hidden minimum trading styles, news trading restrictions, or overnight holding caps on standard challenges. What you see is exactly what you get.",
-            icon: "ShieldCheck"
-          },
-          {
-            title: "Fast-Track Approvals",
-            description: "Our dashboard automatically updates in real-time, certifying passed levels instantly. Payout requests are verified and disbursed in less than 24 hours.",
-            icon: "Zap"
-          }
-        ];
-        defaults.forEach(async (item, idx) => {
-          await setDoc(doc(db, 'why_choose', `card-${idx + 1}`), item);
-        });
-      }
-    }, (err) => {
-      console.warn("Error loading why choose details:", err);
-    });
-
-    return () => {
-      unsubFaqs();
-      unsubRules();
-      unsubHowItWorks();
-      unsubWhyChoose();
-    };
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setSupportEmail(data.supportEmail || 'atfundingsupport@gmail.com');
-      }
-    }, (error) => {
-      console.warn("Error subscribing to general settings:", error);
-    });
-
-    // Real-time subscription to active socialLinks
-    const qSocial = query(collection(db, 'socialLinks'), where('active', '==', true));
-    const unsubSocial = onSnapshot(qSocial, (snapshot) => {
-      const list: SocialLink[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() as any });
-      });
-      // Sort by display order
+    getDocsCached('landing_socials', async () => {
+      const snap = await getDocs(query(collection(db, 'socialLinks'), where('active', '==', true), limit(20)));
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
       list.sort((a, b) => a.sortOrder - b.sortOrder);
-      setSocialLinks(list);
-    }, (error) => {
-      console.warn("Error subscribing to social links:", error);
-    });
+      return list;
+    }).then(res => setSocialLinks(res)).catch(e => console.warn(e));
 
-    return () => {
-      unsub();
-      unsubSocial();
-    };
-  }, []);
+    // 8. Leaderboard Payouts, Accounts, Users (Targeted Limit Queries)
+    getDocsCached('landing_leaderboard_payouts', async () => {
+      const qPayouts = query(collection(db, 'payouts'), where('status', '==', 'approved'), limit(20));
+      const snap = await getDocs(qPayouts);
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a: any, b: any) => new Date(b.processedAt || b.createdAt || 0).getTime() - new Date(a.processedAt || a.createdAt || 0).getTime());
+      return list;
+    }).then(res => setPayouts(res)).catch(e => console.warn(e));
 
-  useEffect(() => {
-    // Subscribe to approved payouts
-    const qPayouts = query(collection(db, 'payouts'), where('status', '==', 'approved'));
-    const unsubPayouts = onSnapshot(qPayouts, (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      // Sort by processedAt or createdAt descending
-      list.sort((a, b) => {
-        const timeA = new Date(a.processedAt || a.createdAt || 0).getTime();
-        const timeB = new Date(b.processedAt || b.createdAt || 0).getTime();
-        return timeB - timeA;
-      });
-      setPayouts(list);
-    }, (err) => {
-      console.warn("Leaderboard payouts error:", err);
-    });
+    getDocsCached('landing_leaderboard_accounts', async () => {
+      const qAccs = query(collection(db, 'accounts'), limit(50));
+      const snap = await getDocs(qAccs);
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }).then(res => setAccounts(res)).catch(e => console.warn(e));
 
-    // Subscribe to all accounts to map account sizes
-    const unsubAccounts = onSnapshot(collection(db, 'accounts'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      setAccounts(list);
-    }, (err) => {
-      console.warn("Leaderboard accounts error:", err);
-    });
-
-    // Subscribe to all users to display names
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      setUsersList(list);
-    }, (err) => {
-      console.warn("Leaderboard users error:", err);
-    });
-
-    return () => {
-      unsubPayouts();
-      unsubAccounts();
-      unsubUsers();
-    };
+    getDocsCached('landing_leaderboard_users', async () => {
+      const qUsers = query(collection(db, 'users'), limit(50));
+      const snap = await getDocs(qUsers);
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }).then(res => setUsersList(res)).catch(e => console.warn(e));
   }, []);
 
   // Filter packages by type
