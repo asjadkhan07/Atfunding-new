@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, collection, query, where, getDocs, addDoc, increment } from 'firebase/firestore';
 import { UserProfile } from '../types';
+import { generatePermanentAffiliateCode, ensureUserAffiliateCode } from '../utils/affiliateManager';
 
 interface AuthPageProps {
   initialMode: 'login' | 'signup';
@@ -240,6 +241,9 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
         const fullName = `${firstName.trim()} ${lastName.trim()}`;
         const savedRef = (referralCode.trim() || localStorage.getItem('referredBy') || '').trim();
 
+        // Requirement 1 & 8: Generate affiliate code ONLY ONCE when account is created, guaranteed globally unique
+        const permanentAffiliateCode = await generatePermanentAffiliateCode(creds.user.uid, email.trim(), username.trim());
+
         const profile: UserProfile = {
           uid: creds.user.uid,
           email: email.trim().toLowerCase(),
@@ -256,7 +260,7 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
           address: address.trim(),
           status: 'active',
           role: 'trader',
-          affiliateCode: username.trim().toLowerCase() + Math.floor(100 + Math.random() * 900),
+          affiliateCode: permanentAffiliateCode,
           emailVerified: true,
           createdAt: new Date().toISOString()
         };
@@ -283,6 +287,17 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
         }
 
         await setDoc(userDocRef, profile);
+
+        // Save permanent record to affiliates collection as well
+        await setDoc(doc(db, 'affiliates', creds.user.uid), {
+          userId: creds.user.uid,
+          code: permanentAffiliateCode,
+          clicks: 0,
+          referrals: 0,
+          unpaidBalance: 0,
+          totalEarned: 0,
+          createdAt: new Date().toISOString()
+        }, { merge: true }).catch(err => console.warn("Could not write initial affiliates record:", err));
 
         // Queue welcome email
         try {
@@ -335,8 +350,15 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
         }
 
         if (profileSnap && profileSnap.exists()) {
-          onAuthSuccess(profileSnap.data() as UserProfile);
+          const userProf = profileSnap.data() as UserProfile;
+          // Requirement 3 & 5: Ensure existing affiliateCode is reused and preserved permanently
+          if (!userProf.affiliateCode) {
+            userProf.affiliateCode = await ensureUserAffiliateCode({ uid: creds.user.uid, email: email.trim().toLowerCase() });
+          }
+          onAuthSuccess(userProf);
         } else {
+          // Requirement 3 & 5: Fallback if user profile document missing - reuse existing code if available
+          const permanentAffiliateCode = await ensureUserAffiliateCode({ uid: creds.user.uid, email: email.trim().toLowerCase() });
           const profile: UserProfile = {
             uid: creds.user.uid,
             email: email.trim().toLowerCase(),
@@ -344,7 +366,7 @@ export default function AuthPage({ initialMode, onAuthSuccess, onBackToLanding }
             name: email.trim().split('@')[0],
             status: 'active',
             role: email.trim().toLowerCase() === 'atgrowfund@gmail.com' ? 'admin' : 'trader',
-            affiliateCode: 'trader' + Math.floor(100 + Math.random() * 900),
+            affiliateCode: permanentAffiliateCode,
             createdAt: new Date().toISOString()
           };
           await setDoc(doc(db, 'users', creds.user.uid), profile);

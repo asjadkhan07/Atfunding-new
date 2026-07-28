@@ -7,7 +7,8 @@ import AdminPanel from './components/AdminPanel';
 import { UserProfile } from './types';
 import { auth, db } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, increment, collection, query, where, getDocs } from 'firebase/firestore';
+import { ensureUserAffiliateCode } from './utils/affiliateManager';
 
 export default function App() {
   const [screen, setScreen] = useState<'landing' | 'auth' | 'dashboard' | 'admin-portal' | 'admin-dashboard'>('landing');
@@ -50,6 +51,12 @@ export default function App() {
             const profile = docSnap.data() as UserProfile;
             const updatedProfile = { ...profile, role: finalRole };
             
+            // Ensure affiliate code exists permanently without modifying existing ones
+            if (!updatedProfile.affiliateCode) {
+              const permCode = await ensureUserAffiliateCode({ uid: authUser.uid, email: authUser.email || '' });
+              updatedProfile.affiliateCode = permCode;
+            }
+
             setUserProfile(updatedProfile);
             
             // Sync role to Firestore if it changed
@@ -74,7 +81,8 @@ export default function App() {
               setScreen('dashboard');
             }
           } else {
-            // Profile document missing fallback (default to trader or admin based on email)
+            // Requirement 3 & 5: Ensure permanent affiliate code reuse
+            const permanentAffiliateCode = await ensureUserAffiliateCode({ uid: authUser.uid, email: authUser.email || '' });
             const fallback: UserProfile = {
               uid: authUser.uid,
               email: authUser.email || '',
@@ -82,7 +90,7 @@ export default function App() {
               name: authUser.displayName || authUser.email?.split('@')[0] || 'Trader',
               status: 'active',
               role: finalRole,
-              affiliateCode: 'trader' + Math.floor(100 + Math.random() * 900),
+              affiliateCode: permanentAffiliateCode,
               createdAt: new Date().toISOString()
             };
             setUserProfile(fallback);

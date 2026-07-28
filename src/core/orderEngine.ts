@@ -2,6 +2,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { priceEngineState } from './priceEngine';
 import { addLocalOpenPosition } from './positionEngine';
+import { calculatePositionMargin } from './accountEngine';
 
 export interface OrderInput {
   accountId: string;
@@ -11,6 +12,8 @@ export interface OrderInput {
   volume: number; // lots
   tp: string;
   sl: string;
+  accountType?: string;
+  freeMargin?: number;
 }
 
 export interface OrderExecutionResult {
@@ -24,11 +27,11 @@ export interface OrderExecutionResult {
  * Handles professional Order Execution.
  * BUY executes at Ask.
  * SELL executes at Bid.
- * Validates Sl / Tp logical boundaries.
+ * Validates Free Margin, Sl / Tp logical boundaries.
  * Writes standard & required UPPERCASE fields to Firestore.
  */
 export async function executeOrder(input: OrderInput): Promise<OrderExecutionResult> {
-  const { accountId, userId, symbol, direction, volume, tp, sl } = input;
+  const { accountId, userId, symbol, direction, volume, tp, sl, accountType, freeMargin } = input;
   
   if (volume <= 0) {
     return { success: false, message: "Position volume (lots) must be greater than zero." };
@@ -41,6 +44,17 @@ export async function executeOrder(input: OrderInput): Promise<OrderExecutionRes
 
   // BUY executes at Ask. SELL executes at Bid.
   const entryPrice = direction === 'buy' ? livePrice.ask : livePrice.bid;
+
+  // Validate Free Margin Requirements
+  if (freeMargin !== undefined && accountType) {
+    const requiredMargin = calculatePositionMargin(symbol, volume, entryPrice, accountType);
+    if (requiredMargin > freeMargin) {
+      return {
+        success: false,
+        message: `Order Rejected: Insufficient Free Margin. Required: $${requiredMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, Free Margin: $${freeMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+      };
+    }
+  }
   
   // Reject trades if entry price is > 5% away from current market price
   const priceDev = Math.abs(entryPrice - livePrice.last) / livePrice.last;

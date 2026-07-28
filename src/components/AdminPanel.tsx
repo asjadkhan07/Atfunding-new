@@ -23,7 +23,17 @@ import { calculateTradePnL } from '../core/pnlEngine';
 import { executeClosePosition } from '../core/positionEngine';
 
 export default function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control'>('stats');
+
+  // Active Accounts Management States
+  const [accountSearchQuery, setAccountSearchQuery] = useState('');
+  const [accountFilterStatus, setAccountFilterStatus] = useState<string>('All');
+  const [accountFilterType, setAccountFilterType] = useState<string>('All');
+  const [editingAccountBalanceModal, setEditingAccountBalanceModal] = useState<TradingAccount | null>(null);
+  const [modalNewBalance, setModalNewBalance] = useState<number>(0);
+  const [modalNewEquity, setModalNewEquity] = useState<number>(0);
+  const [breachingAccountModal, setBreachingAccountModal] = useState<TradingAccount | null>(null);
+  const [breachReasonInput, setBreachReasonInput] = useState<string>('Manual Admin Breach');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [payouts, setPayouts] = useState<PayoutRequest[]>([]);
@@ -1862,60 +1872,72 @@ export default function AdminPanel() {
     try {
       await updateDoc(doc(db, 'ruleViolations', violationId), {
         status: action
-      });
+      }).catch(() => {});
 
       const viol = ruleViolations.find(v => v.id === violationId);
       if (viol && action === 'Suspended') {
         // Mark account as suspended
-        await updateDoc(doc(db, 'accounts', viol.accountId), {
-          status: 'suspended'
-        });
+        if (viol.accountId) {
+          await updateDoc(doc(db, 'accounts', viol.accountId), {
+            status: 'suspended'
+          }).catch(() => {});
+        }
 
         // Send dashboard notification
-        const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
-        await setDoc(doc(db, 'notifications', notifId), {
-          id: notifId,
-          userId: viol.userId,
-          title: 'Account Suspended',
-          message: `Your trading account #${viol.accountId} has been suspended due to: ${viol.violationType}.`,
-          type: 'warning',
-          read: false,
-          createdAt: new Date().toISOString()
-        });
+        if (viol.userId) {
+          const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+          await setDoc(doc(db, 'notifications', notifId), {
+            id: notifId,
+            userId: viol.userId,
+            title: 'Account Suspended',
+            message: `Your trading account #${viol.accountId || 'N/A'} has been suspended due to: ${viol.violationType || 'Rule violation'}.`,
+            type: 'warning',
+            read: false,
+            createdAt: new Date().toISOString()
+          }).catch(() => {});
+        }
       } else if (viol && action === 'Breached') {
         // Mark account as breached
-        await updateDoc(doc(db, 'accounts', viol.accountId), {
-          status: 'breached'
-        });
+        if (viol.accountId) {
+          await updateDoc(doc(db, 'accounts', viol.accountId), {
+            status: 'breached',
+            breachedAt: new Date().toISOString(),
+            breachReason: viol.violationType || 'Rule Breach'
+          }).catch(() => {});
+        }
 
         // Create a Breach record in breaches collection
         const breachId = 'BRCH-' + Math.floor(100000 + Math.random() * 900000);
         await setDoc(doc(db, 'breaches', breachId), {
           id: breachId,
-          userId: viol.userId,
-          accountId: viol.accountId,
-          breachReason: `Breached due to: ${viol.violationType}`,
+          userId: viol.userId || '',
+          accountId: viol.accountId || '',
+          breachReason: `Breached due to: ${viol.violationType || 'Rule Violation'}`,
           breachDate: new Date().toISOString(),
           adminName: 'Admin',
-          userEmail: viol.userEmail || 'unknown@atfunding.io'
-        });
+          userEmail: viol.userEmail || 'unknown@atfunding.online'
+        }).catch(() => {});
 
         // Send dashboard notification
-        const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
-        await setDoc(doc(db, 'notifications', notifId), {
-          id: notifId,
-          userId: viol.userId,
-          title: 'Account BREACHED!',
-          message: `Your trading account #${viol.accountId} has been breached due to a violation of: ${viol.violationType}.`,
-          type: 'danger',
-          read: false,
-          createdAt: new Date().toISOString()
-        });
+        if (viol.userId) {
+          const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+          await setDoc(doc(db, 'notifications', notifId), {
+            id: notifId,
+            userId: viol.userId,
+            title: 'Account BREACHED!',
+            message: `Your trading account #${viol.accountId || 'N/A'} has been breached due to a violation of: ${viol.violationType || 'Rule Violation'}.`,
+            type: 'danger',
+            read: false,
+            createdAt: new Date().toISOString()
+          }).catch(() => {});
+        }
       }
 
+      alert(`Violation action successfully updated to ${action}.`);
       fetchAllData();
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to process violation action:", e);
+      alert("Error updating violation: " + (e?.message || String(e)));
     }
   };
 
@@ -2227,7 +2249,8 @@ export default function AdminPanel() {
           { id: 'market_control', label: 'Market Control', icon: Sliders },
           { id: 'search', label: 'Universal Search', icon: Search },
           { id: 'users', label: 'Users', icon: Users },
-          { id: 'accounts', label: 'Accounts', icon: Gift },
+          { id: 'active_accounts', label: 'Active Accounts', icon: Shield },
+          { id: 'accounts', label: 'Giveaways & Provisioning', icon: Gift },
           { id: 'orders', label: 'Payments', icon: Coins },
           { id: 'certificates', label: 'Certificate Manager', icon: Award },
           { id: 'challenge_reviews', label: 'Challenge Reviews', icon: Award },
@@ -4253,6 +4276,7 @@ export default function AdminPanel() {
             const uBreachedAccounts = uAccounts.filter(a => a.status === 'breached');
             const uPayouts = payouts.filter(p => p.userId === u.uid || p.userEmail === u.email);
             const uOrders = orders.filter(o => o.email === u.email);
+            const uTrades = trades.filter(t => t.userId === u.uid || uAccounts.some(a => a.id === t.accountId || a.login === t.accountId));
 
             return (
               <div className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
@@ -4527,16 +4551,31 @@ export default function AdminPanel() {
                         {/* Active & Evaluation Accounts */}
                         <div className="bg-black/30 border border-white/5 p-4 rounded-2xl space-y-3">
                           <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider font-mono">Active Accounts ({uActiveAccounts.length})</p>
-                          <div className="space-y-2 max-h-40 overflow-y-auto">
+                          <div className="space-y-2 max-h-48 overflow-y-auto">
                             {uActiveAccounts.map(acc => (
-                              <div key={acc.id} className="p-2.5 bg-white/5 border border-white/5 rounded-xl text-xs flex justify-between items-center">
+                              <div key={acc.id} className="p-2.5 bg-white/5 border border-white/5 rounded-xl text-xs flex justify-between items-center gap-2">
                                 <div>
-                                  <p className="font-bold text-white font-mono">{acc.id}</p>
+                                  <p className="font-bold text-white font-mono flex items-center gap-1.5">
+                                    <span>#{acc.login || acc.id}</span>
+                                  </p>
                                   <p className="text-[10px] text-slate-400 capitalize">{acc.accountType.replace('_', ' ')} (${acc.size.toLocaleString()})</p>
                                 </div>
-                                <div className="text-right">
-                                  <p className="font-bold font-mono text-emerald-400">${acc.balance.toLocaleString()}</p>
-                                  <p className="text-[9px] text-slate-500">Equity: ${acc.equity.toLocaleString()}</p>
+                                <div className="flex items-center gap-2">
+                                  <div className="text-right">
+                                    <p className="font-bold font-mono text-emerald-400">${acc.balance.toLocaleString()}</p>
+                                    <p className="text-[9px] text-slate-500">Eq: ${acc.equity.toLocaleString()}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setBreachingAccountModal(acc);
+                                      setBreachReasonInput('Manual Admin Breach');
+                                    }}
+                                    title="Breach Account"
+                                    className="px-2 py-1 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-lg text-[10px] font-bold uppercase transition-all shadow-sm"
+                                  >
+                                    Breach
+                                  </button>
                                 </div>
                               </div>
                             ))}
@@ -4650,6 +4689,102 @@ export default function AdminPanel() {
                               {uPayouts.length === 0 && (
                                 <tr>
                                   <td colSpan={5} className="p-6 text-center text-slate-500 text-xs">No payouts found.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Account Trade History (Full Details with Open & Close Time) */}
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h5 className="text-[11px] font-black text-white uppercase tracking-wider font-mono flex items-center gap-2">
+                          <ListFilter className="w-4 h-4 text-blue-400" />
+                          <span>Account Trade History ({uTrades.length} Total Trades)</span>
+                        </h5>
+                        <span className="text-[10px] font-mono text-slate-400">
+                          Open: <strong className="text-emerald-400">{uTrades.filter(t => (t.status || '').toLowerCase() === 'open').length}</strong> | Closed: <strong className="text-slate-300">{uTrades.filter(t => (t.status || '').toLowerCase() !== 'open').length}</strong>
+                        </span>
+                      </div>
+
+                      <div className="bg-black/40 border border-white/5 rounded-2xl overflow-hidden shadow-xl">
+                        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                          <table className="w-full text-left text-xs text-slate-300">
+                            <thead className="sticky top-0 bg-slate-900/95 backdrop-blur border-b border-white/10 text-[9px] font-mono uppercase text-slate-400 z-10">
+                              <tr>
+                                <th className="p-3">Trade ID / Account</th>
+                                <th className="p-3">Symbol</th>
+                                <th className="p-3">Type</th>
+                                <th className="p-3">Lots</th>
+                                <th className="p-3">Open Price & Time</th>
+                                <th className="p-3">Close Price & Time</th>
+                                <th className="p-3">Hold Duration</th>
+                                <th className="p-3 text-right">Profit / Loss</th>
+                                <th className="p-3 text-center">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5 font-mono text-[11px]">
+                              {uTrades.map((t, idx) => {
+                                const isBuy = (t.type || '').toUpperCase() === 'BUY';
+                                const isOpen = (t.status || '').toLowerCase() === 'open';
+                                const openTimeMs = t.openTime ? new Date(t.openTime).getTime() : 0;
+                                const closeTimeMs = t.closeTime ? new Date(t.closeTime).getTime() : Date.now();
+                                const holdMins = openTimeMs > 0 ? Math.round((closeTimeMs - openTimeMs) / 60000) : 0;
+                                
+                                const formattedOpenTime = t.openTime ? new Date(t.openTime).toLocaleString(undefined, {
+                                  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+                                }) : 'N/A';
+
+                                const formattedCloseTime = t.closeTime ? new Date(t.closeTime).toLocaleString(undefined, {
+                                  year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+                                }) : (isOpen ? 'ACTIVE' : 'N/A');
+
+                                return (
+                                  <tr key={t.id || idx} className="hover:bg-white/[0.02] transition-colors">
+                                    <td className="p-3">
+                                      <span className="font-bold text-white block">#{t.id ? t.id.slice(-6) : idx + 1}</span>
+                                      <span className="text-[10px] text-slate-400 font-mono">Acc: #{t.accountId}</span>
+                                    </td>
+                                    <td className="p-3 font-extrabold text-white">{t.symbol}</td>
+                                    <td className="p-3">
+                                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
+                                        isBuy ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                      }`}>
+                                        {t.type}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-slate-200 font-bold">{t.lots || t.amount || 0.1}</td>
+                                    <td className="p-3">
+                                      <div className="text-white font-bold">${t.openPrice?.toFixed(2) || 'N/A'}</div>
+                                      <div className="text-[9px] text-slate-400 font-mono">{formattedOpenTime}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-white font-bold">{t.closePrice ? `$${t.closePrice.toFixed(2)}` : (isOpen ? '-' : 'N/A')}</div>
+                                      <div className="text-[9px] text-slate-400 font-mono">{formattedCloseTime}</div>
+                                    </td>
+                                    <td className="p-3 text-slate-400 font-mono">
+                                      {isOpen ? `${Math.round((Date.now() - openTimeMs) / 60000)} mins (live)` : `${holdMins} mins`}
+                                    </td>
+                                    <td className={`p-3 text-right font-extrabold font-mono text-xs ${(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {(t.profit || 0) >= 0 ? '+' : ''}${(t.profit || 0).toFixed(2)}
+                                    </td>
+                                    <td className="p-3 text-center">
+                                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
+                                        isOpen ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30 animate-pulse' : 'bg-slate-500/20 text-slate-400'
+                                      }`}>
+                                        {t.status || 'closed'}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {uTrades.length === 0 && (
+                                <tr>
+                                  <td colSpan={9} className="p-8 text-center text-slate-500 text-xs">
+                                    No trade execution history found for this trader's accounts.
+                                  </td>
                                 </tr>
                               )}
                             </tbody>
@@ -4990,6 +5125,512 @@ export default function AdminPanel() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* TAB: ACTIVE ACCOUNTS MANAGER */}
+          {activeTab === 'active_accounts' && (
+            <div className="space-y-6 animate-fade-in">
+              {/* Top Summary Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-5 bg-white/5 border border-white/10 rounded-2xl backdrop-blur-sm shadow-xl">
+                  <div className="text-[10px] font-mono font-bold text-slate-400 uppercase tracking-wider">Total Prop Accounts</div>
+                  <div className="text-2xl font-black font-mono text-white mt-1">{accounts.length}</div>
+                </div>
+                <div className="p-5 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl backdrop-blur-sm shadow-xl">
+                  <div className="text-[10px] font-mono font-bold text-emerald-400 uppercase tracking-wider">Active Trading Accounts</div>
+                  <div className="text-2xl font-black font-mono text-emerald-300 mt-1">
+                    {accounts.filter(a => a.status === 'active' || a.status === 'passed' || a.status === 'phase_passed' || a.status === 'phase2_active').length}
+                  </div>
+                </div>
+                <div className="p-5 bg-rose-500/10 border border-rose-500/20 rounded-2xl backdrop-blur-sm shadow-xl">
+                  <div className="text-[10px] font-mono font-bold text-rose-400 uppercase tracking-wider">Breached Accounts</div>
+                  <div className="text-2xl font-black font-mono text-rose-300 mt-1">
+                    {accounts.filter(a => a.status === 'breached').length}
+                  </div>
+                </div>
+                <div className="p-5 bg-blue-500/10 border border-blue-500/20 rounded-2xl backdrop-blur-sm shadow-xl">
+                  <div className="text-[10px] font-mono font-bold text-blue-400 uppercase tracking-wider">Total System Equity</div>
+                  <div className="text-2xl font-black font-mono text-blue-300 mt-1">
+                    ${accounts.reduce((sum, a) => sum + (a.equity || a.balance || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Main Panel */}
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-5">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/10 pb-5">
+                  <div>
+                    <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Shield className="w-5 h-5 text-blue-400" />
+                      <span>Active Prop Accounts Management</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Monitor, breach, reset, promote or edit balances for all trader accounts across all evaluation phases.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+                    {/* Search Input */}
+                    <div className="relative flex-1 md:w-64">
+                      <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                      <input
+                        type="text"
+                        placeholder="Search ID, email or name..."
+                        value={accountSearchQuery}
+                        onChange={(e) => setAccountSearchQuery(e.target.value)}
+                        className="w-full h-9 bg-black/40 border border-white/10 rounded-xl pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    {/* Status Filter */}
+                    <select
+                      value={accountFilterStatus}
+                      onChange={(e) => setAccountFilterStatus(e.target.value)}
+                      className="h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="All" className="bg-slate-900">All Statuses</option>
+                      <option value="active" className="bg-slate-900">Active Only</option>
+                      <option value="breached" className="bg-slate-900">Breached Only</option>
+                      <option value="passed" className="bg-slate-900">Phase Passed / Pending</option>
+                    </select>
+
+                    {/* Type Filter */}
+                    <select
+                      value={accountFilterType}
+                      onChange={(e) => setAccountFilterType(e.target.value)}
+                      className="h-9 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="All" className="bg-slate-900">All Challenge Types</option>
+                      <option value="one_step" className="bg-slate-900">1-Step Challenge</option>
+                      <option value="two_step" className="bg-slate-900">2-Step Challenge</option>
+                      <option value="payout_later" className="bg-slate-900">Payout Later</option>
+                      <option value="instant_bolt" className="bg-slate-900">Instant Bolt</option>
+                      <option value="funded" className="bg-slate-900">Live Funded</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Accounts Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-300">
+                    <thead>
+                      <tr className="border-b border-white/10 font-mono uppercase text-slate-400 text-[10px]">
+                        <th className="py-3 px-2">Account ID / Login</th>
+                        <th className="py-3 px-2">Trader Email</th>
+                        <th className="py-3 px-2">Type / Phase</th>
+                        <th className="py-3 px-2">Size</th>
+                        <th className="py-3 px-2">Balance</th>
+                        <th className="py-3 px-2">Equity</th>
+                        <th className="py-3 px-2">Status</th>
+                        <th className="py-3 px-2 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/10 font-medium">
+                      {accounts
+                        .filter(acc => {
+                          const query = accountSearchQuery.toLowerCase().trim();
+                          const matchesQuery = !query ||
+                            acc.id.toLowerCase().includes(query) ||
+                            (acc.login && String(acc.login).includes(query)) ||
+                            (acc.userEmail && acc.userEmail.toLowerCase().includes(query)) ||
+                            (acc.userName && acc.userName.toLowerCase().includes(query));
+
+                          const matchesStatus = accountFilterStatus === 'All' ||
+                            (accountFilterStatus === 'active' && (acc.status === 'active' || acc.status === 'phase2_active')) ||
+                            (accountFilterStatus === 'breached' && acc.status === 'breached') ||
+                            (accountFilterStatus === 'passed' && (acc.status === 'passed' || acc.status === 'phase_passed' || acc.phaseStatus === 'phase_passed'));
+
+                          const matchesType = accountFilterType === 'All' || acc.accountType === accountFilterType;
+
+                          return matchesQuery && matchesStatus && matchesType;
+                        })
+                        .map(acc => {
+                          const startBal = acc.startingBalance || acc.size || 5000;
+                          const pnl = (acc.equity || acc.balance) - startBal;
+
+                          return (
+                            <tr key={acc.id} className="hover:bg-white/[0.02] transition-colors">
+                              <td className="py-3 px-2 font-mono">
+                                <span className="text-white font-bold block">#{acc.login || acc.id}</span>
+                                {acc.isGiveaway && (
+                                  <span className="inline-block px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[8px] font-bold rounded uppercase">Giveaway</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-2">
+                                <span className="text-white font-semibold block">{acc.userEmail || 'N/A'}</span>
+                                {acc.userName && <span className="text-slate-500 text-[10px]">{acc.userName}</span>}
+                              </td>
+                              <td className="py-3 px-2 font-mono text-[10px]">
+                                <span className="text-blue-300 font-bold block uppercase">{acc.accountType.replace('_', ' ')}</span>
+                                <span className="text-slate-400">Phase {acc.phase || 1}</span>
+                              </td>
+                              <td className="py-3 px-2 font-mono text-slate-300">
+                                ${startBal.toLocaleString()}
+                              </td>
+                              <td className="py-3 px-2 font-mono text-white font-bold">
+                                ${acc.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-3 px-2 font-mono font-bold">
+                                <span className={pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                  ${acc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2">
+                                <span className={`px-2.5 py-1 rounded-full text-[9px] font-mono font-bold uppercase tracking-wider ${
+                                  acc.status === 'active' || acc.status === 'phase2_active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                  acc.status === 'breached' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                  'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                }`}>
+                                  {acc.status}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {/* Edit Balance & Equity Button */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingAccountBalanceModal(acc);
+                                      setModalNewBalance(acc.balance);
+                                      setModalNewEquity(acc.equity);
+                                    }}
+                                    title="Edit Balance / Equity"
+                                    className="px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600/40 border border-blue-500/30 text-blue-300 rounded-lg text-[10px] font-bold uppercase transition-colors"
+                                  >
+                                    Edit Bal
+                                  </button>
+
+                                  {/* Breach Account Option */}
+                                  {acc.status !== 'breached' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setBreachingAccountModal(acc);
+                                        setBreachReasonInput('Daily Loss Limit Exceeded / Rule Violation');
+                                      }}
+                                      title="Breach Account"
+                                      className="px-2.5 py-1 bg-rose-600/20 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-lg text-[10px] font-bold uppercase transition-all shadow-md shadow-rose-600/10"
+                                    >
+                                      Breach
+                                    </button>
+                                  ) : (
+                                    /* Reset Account Option */
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const confirmReset = window.confirm(`Reset Account #${acc.login || acc.id} back to ACTIVE status with balance $${startBal.toLocaleString()}?`);
+                                        if (!confirmReset) return;
+                                        try {
+                                          await updateDoc(doc(db, 'accounts', acc.id), {
+                                            status: 'active',
+                                            balance: startBal,
+                                            equity: startBal,
+                                            dailyStartingBalance: startBal,
+                                            dailyStartingEquity: startBal,
+                                            updatedAt: new Date().toISOString()
+                                          });
+                                          alert(`Account #${acc.login || acc.id} reset to ACTIVE.`);
+                                          fetchAllData();
+                                        } catch (err: any) {
+                                          alert("Error resetting account: " + err.message);
+                                        }
+                                      }}
+                                      title="Reset / Unbreach Account"
+                                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500 border border-amber-500/30 text-amber-300 hover:text-slate-950 rounded-lg text-[10px] font-bold uppercase transition-all"
+                                    >
+                                      Reset
+                                    </button>
+                                  )}
+
+                                  {/* Promote Phase Option */}
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const nowIso = new Date().toISOString();
+                                      const currentPhase = acc.phase || 1;
+                                      if (currentPhase === 1) {
+                                        const confirmP2 = window.confirm(`Promote Account #${acc.login || acc.id} to Phase 2?`);
+                                        if (!confirmP2) return;
+                                        try {
+                                          await updateDoc(doc(db, 'accounts', acc.id), {
+                                            phase: 2,
+                                            status: 'active',
+                                            phaseStatus: 'phase2_active',
+                                            balance: startBal,
+                                            equity: startBal,
+                                            dailyStartingBalance: startBal,
+                                            dailyStartingEquity: startBal,
+                                            profitTarget: startBal * 0.05
+                                          });
+                                          alert(`Account #${acc.login || acc.id} promoted to Phase 2!`);
+                                          fetchAllData();
+                                        } catch (err: any) {
+                                          alert("Error promoting: " + err.message);
+                                        }
+                                      } else if (currentPhase === 2) {
+                                        const confirmFunded = window.confirm(`Promote Account #${acc.login || acc.id} to Live Funded (Phase 3)?`);
+                                        if (!confirmFunded) return;
+                                        try {
+                                          await updateDoc(doc(db, 'accounts', acc.id), {
+                                            phase: 3,
+                                            accountType: 'funded',
+                                            status: 'active',
+                                            phaseStatus: 'funded',
+                                            balance: startBal,
+                                            equity: startBal,
+                                            dailyStartingBalance: startBal,
+                                            dailyStartingEquity: startBal,
+                                            profitTarget: 0
+                                          });
+                                          alert(`Account #${acc.login || acc.id} promoted to Live Funded Account!`);
+                                          fetchAllData();
+                                        } catch (err: any) {
+                                          alert("Error promoting: " + err.message);
+                                        }
+                                      } else {
+                                        alert("Account is already in Live Funded status.");
+                                      }
+                                    }}
+                                    title="Promote Phase / Pass Target"
+                                    className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-slate-950 rounded-lg text-[10px] font-bold uppercase transition-all"
+                                  >
+                                    Promote
+                                  </button>
+
+                                  {/* Delete Account Option */}
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const confirmDel = window.confirm(`Delete Account #${acc.login || acc.id}? This cannot be undone.`);
+                                      if (!confirmDel) return;
+                                      try {
+                                        await deleteDoc(doc(db, 'accounts', acc.id));
+                                        alert(`Account #${acc.login || acc.id} deleted.`);
+                                        fetchAllData();
+                                      } catch (err: any) {
+                                        alert("Error deleting account: " + err.message);
+                                      }
+                                    }}
+                                    title="Delete Account"
+                                    className="p-1 bg-white/5 hover:bg-rose-600/20 text-slate-400 hover:text-rose-400 rounded-lg transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Edit Balance Modal */}
+              {editingAccountBalanceModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-[#0b0f19] border border-white/10 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl">
+                    <div className="flex justify-between items-center border-b border-white/10 pb-3">
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                        Edit Account #${editingAccountBalanceModal.login || editingAccountBalanceModal.id} Balance
+                      </h3>
+                      <button
+                        onClick={() => setEditingAccountBalanceModal(null)}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs font-bold text-slate-400 block mb-1">New Balance ($)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={modalNewBalance}
+                          onChange={(e) => setModalNewBalance(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-slate-400 block mb-1">New Equity ($)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={modalNewEquity}
+                          onChange={(e) => setModalNewEquity(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingAccountBalanceModal(null)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await updateDoc(doc(db, 'accounts', editingAccountBalanceModal.id), {
+                              balance: modalNewBalance,
+                              equity: modalNewEquity,
+                              updatedAt: new Date().toISOString()
+                            });
+                            alert("Account balance & equity updated successfully!");
+                            setEditingAccountBalanceModal(null);
+                            fetchAllData();
+                          } catch (err: any) {
+                            alert("Error updating account: " + err.message);
+                          }
+                        }}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-blue-600/20"
+                      >
+                        Save Changes
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Breach Account Modal */}
+              {breachingAccountModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-[#0b0f19] border border-rose-500/30 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl">
+                    <div className="flex justify-between items-center border-b border-white/10 pb-3">
+                      <h3 className="text-sm font-bold text-rose-400 uppercase tracking-wider flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-400" />
+                        <span>Confirm Account Breach</span>
+                      </h3>
+                      <button
+                        onClick={() => setBreachingAccountModal(null)}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      You are about to mark Account <strong className="text-white">#{breachingAccountModal.login || breachingAccountModal.id}</strong> ({breachingAccountModal.userEmail}) as <span className="text-rose-400 font-bold uppercase">Breached</span>.
+                    </p>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-400 block mb-1">Reason for Breach</label>
+                      <textarea
+                        rows={3}
+                        value={breachReasonInput}
+                        onChange={(e) => setBreachReasonInput(e.target.value)}
+                        placeholder="e.g. Daily loss limit exceeded or rule violation"
+                        className="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setBreachingAccountModal(null)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const nowIso = new Date().toISOString();
+                          try {
+                            const accId = breachingAccountModal.id;
+                            if (!accId) {
+                              alert("Error: Account ID is missing.");
+                              return;
+                            }
+
+                            const reasonStr = breachReasonInput || 'Manual Admin Breach';
+
+                            // 1. Update account status
+                            await updateDoc(doc(db, 'accounts', accId), {
+                              status: 'breached',
+                              breachedAt: nowIso,
+                              breachReason: reasonStr,
+                              updatedAt: nowIso
+                            });
+
+                            // 2. Record in ruleViolations collection
+                            const violId = `viol-admin-${Date.now()}`;
+                            await setDoc(doc(db, 'ruleViolations', violId), {
+                              id: violId,
+                              accountId: accId,
+                              login: breachingAccountModal.login || accId,
+                              userId: breachingAccountModal.userId || '',
+                              userEmail: breachingAccountModal.userEmail || 'unknown@atfunding.online',
+                              violationType: reasonStr,
+                              status: 'Breached',
+                              equityAtViolation: breachingAccountModal.equity || 0,
+                              balanceAtViolation: breachingAccountModal.balance || 0,
+                              createdAt: nowIso
+                            }).catch((e) => console.warn("Failed to set ruleViolations doc:", e));
+
+                            // 3. Record in rule_violations collection (backwards compatibility)
+                            await setDoc(doc(db, 'rule_violations', violId), {
+                              id: violId,
+                              accountId: accId,
+                              userId: breachingAccountModal.userId || '',
+                              userEmail: breachingAccountModal.userEmail || '',
+                              type: 'manual_admin_breach',
+                              reason: reasonStr,
+                              equityAtViolation: breachingAccountModal.equity || 0,
+                              balanceAtViolation: breachingAccountModal.balance || 0,
+                              createdAt: nowIso
+                            }).catch((e) => console.warn("Failed to set rule_violations doc:", e));
+
+                            // 4. Record in breaches collection
+                            const breachId = 'BRCH-' + Math.floor(100000 + Math.random() * 900000);
+                            await setDoc(doc(db, 'breaches', breachId), {
+                              id: breachId,
+                              userId: breachingAccountModal.userId || '',
+                              accountId: accId,
+                              login: breachingAccountModal.login || accId,
+                              breachReason: reasonStr,
+                              breachDate: nowIso,
+                              adminName: 'Admin',
+                              userEmail: breachingAccountModal.userEmail || 'unknown@atfunding.online'
+                            }).catch((e) => console.warn("Failed to set breaches doc:", e));
+
+                            // 5. Send user notification if userId exists
+                            if (breachingAccountModal.userId) {
+                              const notifId = `notif-breach-${Date.now()}`;
+                              await setDoc(doc(db, 'notifications', notifId), {
+                                id: notifId,
+                                userId: breachingAccountModal.userId,
+                                title: 'Account Status Update - Breached ⚠️',
+                                message: `Account #${breachingAccountModal.login || accId} was marked as breached by risk management. Reason: ${reasonStr}.`,
+                                type: 'warning',
+                                read: false,
+                                createdAt: nowIso
+                              }).catch((e) => console.warn("Failed to set notification doc:", e));
+                            }
+
+                            alert(`Account #${breachingAccountModal.login || accId} marked as BREACHED.`);
+                            setBreachingAccountModal(null);
+                            fetchAllData();
+                          } catch (err: any) {
+                            console.error("Error breaching account:", err);
+                            alert("Error breaching account: " + (err?.message || String(err)));
+                          }
+                        }}
+                        className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-rose-600/20"
+                      >
+                        Confirm Breach
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

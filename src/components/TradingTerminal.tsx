@@ -881,6 +881,27 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       }
     }
 
+    // Check Free Margin before order execution
+    const activePrice = tradeType === 'buy' ? activeSelectedSymbol.ask : activeSelectedSymbol.bid;
+    const requiredMargin = calculatePositionMargin(selectedSymbol.symbol, Number(lots), activePrice, selectedAccount.accountType);
+
+    if (requiredMargin > metrics.freeMargin) {
+      const formattedReq = requiredMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const formattedFree = metrics.freeMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      setErrorMsg(`🚫 Order Rejected: Insufficient Free Margin. Required: $${formattedReq}, Free Margin: $${formattedFree}.`);
+
+      setRuleBreachModal({
+        isOpen: true,
+        title: '🚫 Order Blocked: Insufficient Free Margin',
+        subtitle: `Required Margin: $${formattedReq} | Available Free Margin: $${formattedFree}`,
+        type: 'margin',
+        message: `You do not have enough free margin to open ${lots} lot(s) on ${selectedSymbol.symbol}.`,
+        details: `Your current Free Margin is $${formattedFree}. Opening ${lots} lot(s) on ${selectedSymbol.symbol} at $${activePrice} requires $${formattedReq} in margin.`
+      });
+      return;
+    }
+
     isSubmittingRef.current = true;
     setIsExecuting(true);
     setErrorMsg('');
@@ -894,7 +915,9 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
         direction: tradeType,
         volume: Number(lots),
         tp,
-        sl
+        sl,
+        accountType: selectedAccount.accountType,
+        freeMargin: metrics.freeMargin
       });
 
       if (result.success) {
@@ -1512,6 +1535,28 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                         className="w-full h-11 bg-[#0c1122] border border-white/5 rounded-xl px-4 text-sm font-mono text-white focus:outline-none focus:border-blue-500/50"
                       />
                     </div>
+
+                    {/* Live Required Margin display */}
+                    {(() => {
+                      const orderPrice = tradeType === 'buy' ? activeSelectedSymbol.ask : activeSelectedSymbol.bid;
+                      const reqMargin = calculatePositionMargin(selectedSymbol.symbol, Number(lots), orderPrice, selectedAccount?.accountType || 'standard');
+                      const isInsuff = reqMargin > metrics.freeMargin;
+                      return (
+                        <div className={`flex items-center justify-between p-2.5 rounded-xl bg-[#0c1122] border font-mono text-xs transition-colors mt-2 ${
+                          isInsuff ? 'border-rose-500/40 bg-rose-500/10' : 'border-white/5'
+                        }`}>
+                          <span className="text-slate-400 font-sans text-[11px]">Est. Required Margin:</span>
+                          <span className={`font-bold ${isInsuff ? 'text-rose-400 font-black' : 'text-blue-300'}`}>
+                            ${reqMargin.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {isInsuff && (
+                              <span className="text-[9px] uppercase ml-1.5 px-1.5 py-0.5 bg-rose-500/30 text-rose-300 rounded font-black">
+                                Insufficient
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Take Profit / Stop Loss Inputs */}

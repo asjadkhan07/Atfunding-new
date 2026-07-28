@@ -6,6 +6,7 @@ import { auth, db } from '../firebase';
 import { signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { UserProfile } from '../types';
+import { ensureUserAffiliateCode } from '../utils/affiliateManager';
 
 interface AdminPortalProps {
   onAdminAuthSuccess: (profile: UserProfile) => void;
@@ -103,21 +104,28 @@ export default function AdminPortal({ onAdminAuthSuccess, onBackToLanding }: Adm
         console.warn("Could not retrieve user profile document from Firestore (offline fallback):", userGetError);
       }
 
-      const profile: UserProfile = userSnap && userSnap.exists()
-        ? {
-            ...(userSnap.data() as UserProfile),
-            role: 'admin' as const
-          }
-        : {
-            uid: creds.user.uid,
-            email: loginEmail,
-            displayName: loginEmail.split('@')[0],
-            name: loginEmail.split('@')[0],
-            status: 'active',
-            role: 'admin',
-            affiliateCode: 'admin' + Math.floor(100 + Math.random() * 900),
-            createdAt: new Date().toISOString()
-          };
+      let profile: UserProfile;
+      if (userSnap && userSnap.exists()) {
+        profile = {
+          ...(userSnap.data() as UserProfile),
+          role: 'admin' as const
+        };
+        if (!profile.affiliateCode) {
+          profile.affiliateCode = await ensureUserAffiliateCode({ uid: creds.user.uid, email: loginEmail });
+        }
+      } else {
+        const permanentAffiliateCode = await ensureUserAffiliateCode({ uid: creds.user.uid, email: loginEmail });
+        profile = {
+          uid: creds.user.uid,
+          email: loginEmail,
+          displayName: loginEmail.split('@')[0],
+          name: loginEmail.split('@')[0],
+          status: 'active',
+          role: 'admin',
+          affiliateCode: permanentAffiliateCode,
+          createdAt: new Date().toISOString()
+        };
+      }
 
       try {
         await setDoc(userRef, profile);
