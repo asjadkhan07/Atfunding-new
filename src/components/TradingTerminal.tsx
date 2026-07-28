@@ -1790,7 +1790,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                               <td className="py-3.5 font-bold text-white font-mono">
                                 <div>{trade.symbol}</div>
                                 <div className="text-[9px] text-slate-500 font-normal mt-0.5 space-y-0.5">
-                                  <div>EP: {trade.openPrice.toFixed(decimals)} | CP: {currentPrice.toFixed(decimals)}</div>
+                                  <div>EP: {Number(trade.openPrice || 0).toFixed(decimals)} | CP: {currentPrice.toFixed(decimals)}</div>
                                   <div>Diff: {priceDiff >= 0 ? '+' : ''}{priceDiff.toFixed(decimals)}</div>
                                   <div>CS: {getContractSize(trade.symbol).toLocaleString()} | Vol: {trade.lots} Lot</div>
                                   <div>PnL: ${currentPnL.toFixed(2)}</div>
@@ -1898,7 +1898,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                                   {trade.type.toUpperCase()}
                                 </span>
                               </td>
-                              <td className="py-2.5 text-right font-mono">${trade.openPrice.toFixed(decimals)}</td>
+                              <td className="py-2.5 text-right font-mono">${Number(trade.openPrice || 0).toFixed(decimals)}</td>
                               <td className="py-2.5 text-right font-mono text-blue-400">${currentPrice.toFixed(decimals)}</td>
                               <td className={`py-2.5 text-right font-mono font-bold ${diff >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 {diff >= 0 ? '+' : ''}{diff.toFixed(decimals)}

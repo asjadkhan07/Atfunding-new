@@ -27,9 +27,13 @@ let priceUnsubscribe: (() => void) | null = null;
 // Convert firestore doc or standard Trade model to RichTrade that satisfies BOTH standard and user-requested shapes
 export function mapToRichTrade(t: any): RichTrade {
   const direction = t.direction || t.type || 'buy';
-  const entryPrice = t.entryPrice !== undefined ? t.entryPrice : (t.openPrice || 0);
-  const volume = t.volume !== undefined ? t.volume : (t.lots || 1);
+  const rawEntry = t.entryPrice !== undefined ? t.entryPrice : t.openPrice;
+  const entryPrice = rawEntry !== undefined && rawEntry !== null && rawEntry !== '' ? Number(rawEntry) : 0;
+  const rawVolume = t.volume !== undefined ? t.volume : t.lots;
+  const volume = rawVolume !== undefined && rawVolume !== null && rawVolume !== '' ? Number(rawVolume) : 0.1;
   const statusUpper = (t.status === 'open' || t.status === 'OPEN') ? 'OPEN' : 'CLOSED';
+  const closePrice = t.closePrice !== undefined && t.closePrice !== null && t.closePrice !== '' ? Number(t.closePrice) : undefined;
+  const profit = t.profit !== undefined && t.profit !== null && t.profit !== '' ? Number(t.profit) : 0;
   
   return {
     ...t,
@@ -47,10 +51,10 @@ export function mapToRichTrade(t: any): RichTrade {
     sl: String(t.sl || ''),
     status: statusUpper === 'OPEN' ? 'open' : 'closed',
     statusUpper,
-    profit: t.profit || 0,
+    profit,
     openTime: t.openTime || new Date().toISOString(),
     closeTime: t.closeTime,
-    closePrice: t.closePrice,
+    closePrice,
   };
 }
 

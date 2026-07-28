@@ -94,6 +94,18 @@ export interface PayoutRequest {
   processedAt?: string;
 }
 
+export interface OtpRequest {
+  id?: string;
+  userId: string;
+  email: string;
+  otpCode: string;
+  createdAt: string;
+  expiresAt: string;
+  verified: boolean;
+  attempts: number;
+  expired?: boolean;
+}
+
 export interface Affiliate {
   userId: string;
   code: string;

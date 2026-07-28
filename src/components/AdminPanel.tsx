@@ -4757,18 +4757,18 @@ export default function AdminPanel() {
                                     </td>
                                     <td className="p-3 text-slate-200 font-bold">{t.lots || t.amount || 0.1}</td>
                                     <td className="p-3">
-                                      <div className="text-white font-bold">${t.openPrice?.toFixed(2) || 'N/A'}</div>
+                                      <div className="text-white font-bold">${t.openPrice != null ? Number(t.openPrice).toFixed(2) : 'N/A'}</div>
                                       <div className="text-[9px] text-slate-400 font-mono">{formattedOpenTime}</div>
                                     </td>
                                     <td className="p-3">
-                                      <div className="text-white font-bold">{t.closePrice ? `$${t.closePrice.toFixed(2)}` : (isOpen ? '-' : 'N/A')}</div>
+                                      <div className="text-white font-bold">{t.closePrice != null && t.closePrice !== '' ? `$${Number(t.closePrice).toFixed(2)}` : (isOpen ? '-' : 'N/A')}</div>
                                       <div className="text-[9px] text-slate-400 font-mono">{formattedCloseTime}</div>
                                     </td>
                                     <td className="p-3 text-slate-400 font-mono">
                                       {isOpen ? `${Math.round((Date.now() - openTimeMs) / 60000)} mins (live)` : `${holdMins} mins`}
                                     </td>
-                                    <td className={`p-3 text-right font-extrabold font-mono text-xs ${(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                      {(t.profit || 0) >= 0 ? '+' : ''}${(t.profit || 0).toFixed(2)}
+                                    <td className={`p-3 text-right font-extrabold font-mono text-xs ${Number(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {Number(t.profit || 0) >= 0 ? '+' : ''}${Number(t.profit || 0).toFixed(2)}
                                     </td>
                                     <td className="p-3 text-center">
                                       <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
@@ -6547,10 +6547,10 @@ export default function AdminPanel() {
                                     </span>
                                   </td>
                                   <td className="py-2 px-2 text-slate-300">{t.amount || t.lots || 0.1}</td>
-                                  <td className="py-2 px-2 text-slate-400">${t.openPrice?.toFixed(2) || 'N/A'}</td>
-                                  <td className="py-2 px-2 text-slate-400">${t.closePrice?.toFixed(2) || 'N/A'}</td>
-                                  <td className={`py-2 px-2 font-bold ${(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {(t.profit || 0) >= 0 ? '+' : ''}${(t.profit || 0).toFixed(2)}
+                                  <td className="py-2 px-2 text-slate-400">{t.openPrice != null ? `$${Number(t.openPrice).toFixed(2)}` : 'N/A'}</td>
+                                  <td className="py-2 px-2 text-slate-400">{t.closePrice != null ? `$${Number(t.closePrice).toFixed(2)}` : 'N/A'}</td>
+                                  <td className={`py-2 px-2 font-bold ${Number(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {Number(t.profit || 0) >= 0 ? '+' : ''}${Number(t.profit || 0).toFixed(2)}
                                   </td>
                                   <td className="py-2 px-2 text-slate-400">
                                     {holdMins} min{holdMins !== 1 ? 's' : ''}
@@ -7115,8 +7115,8 @@ export default function AdminPanel() {
                                     </span>
                                   </td>
                                   <td className="py-2.5 font-mono">{t.lots} Lots</td>
-                                  <td className={`py-2.5 font-mono font-bold ${t.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    ${t.profit.toFixed(2)}
+                                  <td className={`py-2.5 font-mono font-bold ${Number(t.profit || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                    ${Number(t.profit || 0).toFixed(2)}
                                   </td>
                                   <td className="py-2.5 text-right uppercase text-[10px] text-slate-400 font-mono font-bold">{t.status}</td>
                                 </tr>

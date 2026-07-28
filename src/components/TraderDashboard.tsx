@@ -468,6 +468,313 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   const [payoutAddress, setPayoutAddress] = useState('');
   const [payoutMsg, setPayoutMsg] = useState('');
 
+  // Payout Security Upgrade - OTP Verification States
+  const [showPayoutOtpModal, setShowPayoutOtpModal] = useState(false);
+  const [payoutOtpCode, setPayoutOtpCode] = useState('');
+  const [payoutOtpLoading, setPayoutOtpLoading] = useState(false);
+  const [payoutOtpError, setPayoutOtpError] = useState('');
+  const [payoutOtpSuccess, setPayoutOtpSuccess] = useState('');
+  const [payoutOtpAttemptsLeft, setPayoutOtpAttemptsLeft] = useState(3);
+  const [payoutOtpResendTimer, setPayoutOtpResendTimer] = useState(60);
+  const [payoutPendingData, setPayoutPendingData] = useState<{
+    amount: number;
+    payoutMethod: string;
+    payoutAddress: string;
+    selectedAccountId: string;
+  } | null>(null);
+
+  // Resend OTP Countdown Timer Effect
+  useEffect(() => {
+    let interval: any = null;
+    if (showPayoutOtpModal && payoutOtpResendTimer > 0) {
+      interval = setInterval(() => {
+        setPayoutOtpResendTimer((prev) => Math.max(0, prev - 1));
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [showPayoutOtpModal, payoutOtpResendTimer]);
+
+  // Dispatch 6-digit Payout OTP to registered email
+  const sendPayoutOtp = async (userId: string, email: string) => {
+    setPayoutOtpLoading(true);
+    setPayoutOtpError('');
+    setPayoutOtpSuccess('');
+
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+
+      // 1. One active OTP at a time: query existing unverified OTPs in Firestore and mark them expired/unverified
+      try {
+        const otpRef = collection(db, "otpRequests");
+        const existingQuery = query(otpRef, where("userId", "==", userId), where("verified", "==", false));
+        const existingSnap = await getDocs(existingQuery);
+        for (const docSnap of existingSnap.docs) {
+          await updateDoc(doc(db, "otpRequests", docSnap.id), {
+            expired: true,
+            verified: false,
+            invalidatedAt: new Date().toISOString()
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn("Client cleanup of active OTPs:", e);
+      }
+
+      // 2. Generate 6-digit OTP code
+      const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
+
+      const otpId = `otp-payout-${userId}-${Date.now()}`;
+
+      // 3. Save document in otpRequests collection
+      await setDoc(doc(db, "otpRequests", otpId), {
+        id: otpId,
+        userId: userId,
+        email: cleanEmail,
+        otpCode: generatedOtp,
+        createdAt: createdAt,
+        expiresAt: expiresAt,
+        verified: false,
+        attempts: 0
+      });
+
+      // 4. Queue OTP email in Firestore email_queue & call server endpoint
+      const emailMessage = `Hello,\n\nYour 6-digit verification code for ATFunding Payout Request is:\n\n${generatedOtp}\n\nThis OTP code will expire in 10 minutes.\n\nATFunding Security Desk`;
+      const htmlMessage = `<div style="font-family:sans-serif;padding:24px;background:#0b0f19;color:#f8fafc;border-radius:16px;border:1px solid #1e293b;max-width:500px;margin:auto;">
+        <h2 style="color:#38bdf8;margin-top:0;">ATFunding Payout Verification 🔒</h2>
+        <p style="font-size:14px;color:#cbd5e1;">Your 6-digit security OTP code for confirming your withdrawal request is:</p>
+        <div style="font-size:36px;font-weight:900;letter-spacing:8px;color:#22c55e;background:#1e293b;padding:20px;text-align:center;border-radius:12px;margin:20px 0;border:1px solid #334155;">
+          ${generatedOtp}
+        </div>
+        <p style="font-size:12px;color:#94a3b8;line-height:1.5;">This code expires in <strong>10 minutes</strong>. If you did not initiate a payout request, please contact ATFunding risk desk immediately.</p>
+      </div>`;
+
+      await setDoc(doc(db, "email_queue", `queue-payout-otp-${Date.now()}`), {
+        id: `queue-payout-otp-${Date.now()}`,
+        recipient: cleanEmail,
+        subject: "ATFunding Payout Verification OTP",
+        message: emailMessage,
+        html: htmlMessage,
+        status: "pending",
+        createdAt: createdAt,
+        userId: userId
+      });
+
+      // Try server endpoint for immediate dispatch
+      fetch("/api/payout/send-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, email: cleanEmail })
+      }).catch(err => console.warn("API payout/send-otp notice:", err));
+
+      setPayoutOtpSuccess(`Security OTP code sent to ${cleanEmail}. Check your email inbox.`);
+      setPayoutOtpResendTimer(60);
+      setPayoutOtpAttemptsLeft(3);
+    } catch (err: any) {
+      console.error("Error sending payout OTP:", err);
+      setPayoutOtpError("Failed to dispatch OTP verification code. Please try again.");
+    } finally {
+      setPayoutOtpLoading(false);
+    }
+  };
+
+  // Verify OTP and complete Payout creation
+  const handleVerifyAndSubmitPayout = async () => {
+    if (!payoutPendingData || !selectedAccount) {
+      setPayoutOtpError("Payout session expired. Please re-enter your payout details.");
+      return;
+    }
+
+    const cleanCode = payoutOtpCode.trim();
+    if (!cleanCode || cleanCode.length !== 6 || !/^\d+$/.test(cleanCode)) {
+      setPayoutOtpError("Please enter the 6-digit numeric OTP code sent to your email.");
+      return;
+    }
+
+    setPayoutOtpLoading(true);
+    setPayoutOtpError('');
+    setPayoutOtpSuccess('');
+
+    try {
+      // 1. Try server API verification first
+      let verifiedByApi = false;
+      let apiErrorMessage = '';
+      try {
+        const res = await fetch("/api/payout/verify-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: user.uid,
+            email: user.email,
+            otpCode: cleanCode
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          verifiedByApi = true;
+        } else {
+          apiErrorMessage = data.message || "Invalid OTP code.";
+          if (data.maxAttemptsReached) {
+            setPayoutOtpError(apiErrorMessage);
+            setShowPayoutOtpModal(false);
+            setPayoutMsg("Payout request rejected: Maximum 3 OTP verification attempts exceeded.");
+            setPayoutPendingData(null);
+            setPayoutOtpLoading(false);
+            return;
+          }
+        }
+      } catch (apiErr) {
+        console.warn("Server API verify-otp notice, falling back to direct Firestore verification:", apiErr);
+      }
+
+      // 2. Direct Firestore verification if API was not used or failed due to network
+      if (!verifiedByApi) {
+        if (apiErrorMessage) {
+          const otpRef = collection(db, "otpRequests");
+          const q = query(otpRef, where("userId", "==", user.uid), where("verified", "==", false));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const activeDoc = snap.docs.map(d => ({ docId: d.id, ...d.data() as any })).filter(d => !d.expired)[0];
+            if (activeDoc) {
+              const newAttempts = (activeDoc.attempts || 0) + 1;
+              const isMax = newAttempts >= 3;
+              await updateDoc(doc(db, "otpRequests", activeDoc.docId), {
+                attempts: newAttempts,
+                expired: isMax
+              }).catch(() => {});
+              
+              setPayoutOtpAttemptsLeft(Math.max(0, 3 - newAttempts));
+              
+              if (isMax) {
+                setPayoutOtpError("Invalid OTP code. Maximum 3 attempts exceeded. Payout request rejected.");
+                setTimeout(() => {
+                  setShowPayoutOtpModal(false);
+                  setPayoutMsg("Payout request rejected: Maximum 3 OTP verification attempts exceeded.");
+                  setPayoutPendingData(null);
+                }, 1500);
+                setPayoutOtpLoading(false);
+                return;
+              }
+            }
+          }
+          setPayoutOtpError(apiErrorMessage);
+          setPayoutOtpLoading(false);
+          return;
+        } else {
+          // Direct client Firestore verification
+          const otpRef = collection(db, "otpRequests");
+          const q = query(otpRef, where("userId", "==", user.uid), where("verified", "==", false));
+          const snap = await getDocs(q);
+
+          if (snap.empty) {
+            setPayoutOtpError("No active OTP request found. Please request a new OTP.");
+            setPayoutOtpLoading(false);
+            return;
+          }
+
+          const docs = snap.docs.map(d => ({ docId: d.id, ...d.data() as any })).filter(d => !d.expired);
+          docs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          if (docs.length === 0) {
+            setPayoutOtpError("No active OTP request found. Please request a new OTP.");
+            setPayoutOtpLoading(false);
+            return;
+          }
+
+          const activeOtp = docs[0];
+          const logId = `log-otp-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+          // Expiry check (10 mins)
+          if (new Date(activeOtp.expiresAt).getTime() < Date.now()) {
+            await updateDoc(doc(db, "otpRequests", activeOtp.docId), { expired: true }).catch(() => {});
+            await setDoc(doc(db, "otpVerificationLogs", logId), { userId: user.uid, email: user.email, attemptedCode: cleanCode, timestamp: new Date().toISOString(), result: "EXPIRED" }).catch(() => {});
+            setPayoutOtpError("OTP code has expired. Please click Resend OTP.");
+            setPayoutOtpLoading(false);
+            return;
+          }
+
+          // Attempts check (3 max)
+          if ((activeOtp.attempts || 0) >= 3) {
+            await updateDoc(doc(db, "otpRequests", activeOtp.docId), { expired: true }).catch(() => {});
+            await setDoc(doc(db, "otpVerificationLogs", logId), { userId: user.uid, email: user.email, attemptedCode: cleanCode, timestamp: new Date().toISOString(), result: "MAX_ATTEMPTS_EXCEEDED" }).catch(() => {});
+            setPayoutOtpError("Maximum attempt limit exceeded (3 attempts max). Payout request rejected.");
+            setShowPayoutOtpModal(false);
+            setPayoutMsg("Payout request rejected: Maximum 3 OTP verification attempts exceeded.");
+            setPayoutPendingData(null);
+            setPayoutOtpLoading(false);
+            return;
+          }
+
+          // Code match check
+          if (activeOtp.otpCode !== cleanCode) {
+            const newAttempts = (activeOtp.attempts || 0) + 1;
+            const isMax = newAttempts >= 3;
+            await updateDoc(doc(db, "otpRequests", activeOtp.docId), {
+              attempts: newAttempts,
+              expired: isMax
+            }).catch(() => {});
+            await setDoc(doc(db, "otpVerificationLogs", logId), { userId: user.uid, email: user.email, attemptedCode: cleanCode, timestamp: new Date().toISOString(), result: isMax ? "REJECTED_MAX_ATTEMPTS" : "INVALID_CODE", attemptsUsed: newAttempts }).catch(() => {});
+
+            setPayoutOtpAttemptsLeft(Math.max(0, 3 - newAttempts));
+
+            if (isMax) {
+              setPayoutOtpError("Invalid OTP code. Maximum 3 attempts exceeded. Payout request rejected.");
+              setTimeout(() => {
+                setShowPayoutOtpModal(false);
+                setPayoutMsg("Payout request rejected: Maximum 3 OTP verification attempts exceeded.");
+                setPayoutPendingData(null);
+              }, 1500);
+            } else {
+              setPayoutOtpError(`Invalid OTP code. (${newAttempts}/3 attempts used)`);
+            }
+            setPayoutOtpLoading(false);
+            return;
+          }
+
+          // Match success!
+          await updateDoc(doc(db, "otpRequests", activeOtp.docId), {
+            verified: true,
+            verifiedAt: new Date().toISOString()
+          }).catch(() => {});
+          await setDoc(doc(db, "otpVerificationLogs", logId), { userId: user.uid, email: user.email, attemptedCode: cleanCode, timestamp: new Date().toISOString(), result: "SUCCESS" }).catch(() => {});
+        }
+      }
+
+      // 3. SUCCESS! EXECUTE PAYOUT CREATION NOW
+      const payoutId = 'PAY-' + Math.floor(100000 + Math.random() * 900000);
+      const newPayout: PayoutRequest = {
+        id: payoutId,
+        userId: user.uid,
+        userEmail: user.email,
+        accountId: payoutPendingData.selectedAccountId,
+        amount: payoutPendingData.amount,
+        status: 'pending',
+        payoutMethod: payoutPendingData.payoutMethod,
+        payoutAddress: payoutPendingData.payoutAddress,
+        createdAt: new Date().toISOString()
+      };
+
+      await setDoc(doc(db, 'payouts', payoutId), newPayout);
+      await updateDoc(doc(db, 'accounts', payoutPendingData.selectedAccountId), {
+        status: 'payout_requested'
+      });
+
+      setPayoutMsg("Success! Security OTP verified and payout request submitted to the review desk. Estimated processing: <24h.");
+      setPayoutAmount('');
+      setPayoutAddress('');
+      setPayoutPendingData(null);
+      setShowPayoutOtpModal(false);
+      fetchUserData();
+    } catch (e: any) {
+      console.error("Error verifying payout OTP:", e);
+      setPayoutOtpError("An error occurred during verification: " + (e.message || "Unknown error"));
+    } finally {
+      setPayoutOtpLoading(false);
+    }
+  };
+
   // Affiliate states
   const [affiliateCodeInput, setAffiliateCodeInput] = useState('');
   const [affiliateMsg, setAffiliateMsg] = useState('');
@@ -877,35 +1184,24 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       return;
     }
 
-    const payoutId = 'PAY-' + Math.floor(100000 + Math.random() * 900000);
-    const newPayout: PayoutRequest = {
-      id: payoutId,
-      userId: user.uid,
-      userEmail: user.email,
-      accountId: selectedAccount.id,
-      amount: amount,
-      status: 'pending',
-      payoutMethod: payoutMethod,
-      payoutAddress: payoutAddress,
-      createdAt: new Date().toISOString()
-    };
-
-    try {
-      await setDoc(doc(db, 'payouts', payoutId), newPayout);
-      
-      // Update account status to locked / payout requested
-      await updateDoc(doc(db, 'accounts', selectedAccount.id), {
-        status: 'payout_requested'
-      });
-
-      setPayoutMsg("Success! Your payout request has been sent to the review desk. Estimated time: <24h.");
-      setPayoutAmount('');
-      setPayoutAddress('');
-      fetchUserData();
-    } catch (e) {
-      console.error(e);
-      setPayoutMsg("Error executing payout request.");
+    if (!payoutAddress.trim()) {
+      setPayoutMsg("Please enter your wallet address or bank account details.");
+      return;
     }
+
+    // Save validated payout parameters and launch OTP verification modal
+    setPayoutPendingData({
+      amount,
+      payoutMethod,
+      payoutAddress: payoutAddress.trim(),
+      selectedAccountId: selectedAccount.id
+    });
+
+    setPayoutOtpCode('');
+    setPayoutOtpError('');
+    setPayoutOtpSuccess('');
+    setShowPayoutOtpModal(true);
+    sendPayoutOtp(user.uid, user.email);
   };
 
   const handlePurchaseSuccess = (accountType: string, size: number) => {
@@ -3052,6 +3348,133 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                       <>
                         <Check className="w-4 h-4" />
                         <span>Submit Verification Proof</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PAYOUT SECURITY OTP VERIFICATION MODAL */}
+        {showPayoutOtpModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-6 relative animate-in fade-in zoom-in-95 duration-200">
+              
+              {/* Header */}
+              <div className="text-center space-y-2">
+                <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center mx-auto text-blue-400 shadow-lg shadow-blue-500/10">
+                  <ShieldCheck className="w-7 h-7" />
+                </div>
+                <h3 className="text-xl font-extrabold text-white tracking-tight">Payout Security Verification 🔒</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  A 6-digit security OTP code has been sent to your registered email:
+                  <span className="block font-bold font-mono text-blue-400 mt-0.5">{user.email}</span>
+                </p>
+              </div>
+
+              {/* Status messages */}
+              {payoutOtpError && (
+                <div className="p-3.5 bg-red-500/10 border border-red-500/30 rounded-xl text-xs text-red-300 flex items-start space-x-2.5">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{payoutOtpError}</span>
+                </div>
+              )}
+
+              {payoutOtpSuccess && (
+                <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-xs text-emerald-300 flex items-start space-x-2.5">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <span className="font-medium leading-relaxed">{payoutOtpSuccess}</span>
+                </div>
+              )}
+
+              {/* OTP Input Form */}
+              <div className="space-y-4">
+                <div className="space-y-1.5 text-center">
+                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Enter 6-Digit OTP Code
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    autoFocus
+                    placeholder="123456"
+                    value={payoutOtpCode}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                      setPayoutOtpCode(val);
+                      if (payoutOtpError) setPayoutOtpError('');
+                    }}
+                    className="w-full h-14 bg-slate-950 border border-slate-700 rounded-2xl text-center text-2xl font-black font-mono tracking-[10px] text-emerald-400 placeholder-slate-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all shadow-inner"
+                  />
+                  <div className="flex items-center justify-between text-[11px] pt-1 px-1 text-slate-400">
+                    <span>Expiry: 10 minutes</span>
+                    <span className={`font-bold font-mono ${payoutOtpAttemptsLeft <= 1 ? 'text-red-400' : 'text-amber-400'}`}>
+                      Attempts: {payoutOtpAttemptsLeft}/3
+                    </span>
+                  </div>
+                </div>
+
+                {/* Resend OTP Button with 60s cooldown */}
+                <div className="flex items-center justify-between pt-1 text-xs">
+                  <span className="text-slate-400">Didn't receive code?</span>
+                  <button
+                    type="button"
+                    disabled={payoutOtpResendTimer > 0 || payoutOtpLoading}
+                    onClick={() => {
+                      setPayoutOtpCode('');
+                      sendPayoutOtp(user.uid, user.email);
+                    }}
+                    className={`font-bold transition-all ${
+                      payoutOtpResendTimer > 0 || payoutOtpLoading
+                        ? 'text-slate-500 cursor-not-allowed'
+                        : 'text-blue-400 hover:text-blue-300 underline cursor-pointer'
+                    }`}
+                  >
+                    {payoutOtpResendTimer > 0 
+                      ? `Resend OTP (${payoutOtpResendTimer}s)` 
+                      : payoutOtpLoading 
+                        ? 'Sending...' 
+                        : 'Resend OTP Code'}
+                  </button>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="pt-3 flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    type="button"
+                    disabled={payoutOtpLoading}
+                    onClick={() => {
+                      setShowPayoutOtpModal(false);
+                      setPayoutPendingData(null);
+                      setPayoutOtpError('');
+                      setPayoutOtpSuccess('');
+                    }}
+                    className="w-full sm:w-1/3 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold text-slate-300 transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={payoutOtpLoading || payoutOtpCode.length !== 6}
+                    onClick={handleVerifyAndSubmitPayout}
+                    className={`w-full sm:w-2/3 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow-lg flex items-center justify-center space-x-2 ${
+                      payoutOtpCode.length === 6 && !payoutOtpLoading
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20 cursor-pointer'
+                        : 'bg-slate-800 text-slate-500 border border-white/5 cursor-not-allowed'
+                    }`}
+                  >
+                    {payoutOtpLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Verify & Request Payout</span>
                       </>
                     )}
                   </button>

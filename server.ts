@@ -214,14 +214,15 @@ function getMailTransporter() {
       host,
       port,
       secure: port === 465, // true for 465, false for other ports
-      pool: true, // Reuse socket connection for bulk emails to prevent Gmail 421 rate limits
-      maxConnections: 2,
-      maxMessages: 50,
+      pool: false, // Use clean single connections to prevent Gmail 421 connection pooling errors
       auth: {
         user,
         pass,
       },
-    });
+      tls: {
+        rejectUnauthorized: false
+      }
+    } as any);
   }
   return null;
 }
@@ -252,14 +253,21 @@ async function sendSingleMailWithRetry(transporter: any, fromAddress: string, to
         return { success: true, simulated: true, quotaExceeded: true, note: `Gmail Daily Quota Reached (${msg}) - Saved in Database Queue` };
       }
 
-      console.warn(`SMTP delivery attempt ${attempt} notice for ${to}: ${msg}`);
-      const isAuthOrRateLimit = /Invalid login|454|535|EAUTH|too many login attempts|Temporary System Problem/i.test(msg);
-      if (isAuthOrRateLimit && attempt === 1) {
-        await new Promise((res) => setTimeout(res, 250));
-      } else if (attempt < 3) {
-        await new Promise((res) => setTimeout(res, 200));
+      const isTemporary421 = /421|451|452|Temporary System Problem/i.test(msg);
+      if (isTemporary421) {
+        smtpCooldownUntil = Date.now() + 30 * 1000; // 30-second cooldown for temporary 421 server errors
+        console.warn(`Gmail SMTP 421 temporary system notice for ${to} (${msg}). Pausing SMTP queue for 30 seconds.`);
       } else {
-        return { success: true, simulated: true, quotaExceeded: false, note: `SMTP Notice (${msg}) - Fallback Logged` };
+        console.warn(`SMTP delivery attempt ${attempt} notice for ${to}: ${msg}`);
+      }
+
+      const isAuthOrRateLimit = /Invalid login|454|535|EAUTH|too many login attempts|Temporary System Problem|421/i.test(msg);
+      if (isAuthOrRateLimit && attempt === 1) {
+        await new Promise((res) => setTimeout(res, 500));
+      } else if (attempt < 3) {
+        await new Promise((res) => setTimeout(res, 1000));
+      } else {
+        return { success: true, simulated: true, quotaExceeded: isTemporary421, note: `SMTP Notice (${msg}) - Saved in Database Queue` };
       }
     }
   }
@@ -339,6 +347,192 @@ setInterval(processEmailQueue, 1000);
 // API routes go here FIRST
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", message: "ATFunding Mailer running" });
+});
+
+// Payout Verification - Send OTP Route
+app.post("/api/payout/send-otp", async (req, res) => {
+  try {
+    const { userId, email } = req.body;
+    if (!userId || !email) {
+      res.status(400).json({ success: false, message: "UserId and email are required." });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Enforce one active OTP at a time: query existing unverified OTPs and mark them expired/unverified
+    try {
+      const otpRef = collection(db, "otpRequests");
+      const existingQuery = query(otpRef, where("userId", "==", userId), where("verified", "==", false));
+      const existingSnap = await getDocs(existingQuery);
+      
+      for (const docSnap of existingSnap.docs) {
+        await updateDoc(doc(db, "otpRequests", docSnap.id), {
+          expired: true,
+          verified: false,
+          invalidatedAt: new Date().toISOString()
+        }).catch(() => {});
+      }
+    } catch (cleanErr) {
+      console.warn("Notice cleaning old otpRequests:", cleanErr);
+    }
+
+    // 2. Generate secure 6-digit OTP code
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const createdAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes expiry
+
+    const otpId = `otp-payout-${userId}-${Date.now()}`;
+
+    // 3. Save OTP record to otpRequests collection
+    await setDoc(doc(db, "otpRequests", otpId), {
+      id: otpId,
+      userId: userId,
+      email: cleanEmail,
+      otpCode: otpCode,
+      createdAt: createdAt,
+      expiresAt: expiresAt,
+      verified: false,
+      attempts: 0
+    });
+
+    // 4. Queue OTP verification email
+    const emailMessage = `Hello,\n\nYour 6-digit verification code for ATFunding Payout Request is:\n\n${otpCode}\n\nThis OTP code will expire in 10 minutes.\n\nATFunding Security Desk`;
+    const htmlMessage = `<div style="font-family:sans-serif;padding:24px;background:#0b0f19;color:#f8fafc;border-radius:16px;border:1px solid #1e293b;max-width:500px;margin:auto;">
+      <h2 style="color:#38bdf8;margin-top:0;">ATFunding Payout Verification 🔒</h2>
+      <p style="font-size:14px;color:#cbd5e1;">Your 6-digit security OTP code for confirming your withdrawal request is:</p>
+      <div style="font-size:36px;font-weight:900;letter-spacing:8px;color:#22c55e;background:#1e293b;padding:20px;text-align:center;border-radius:12px;margin:20px 0;border:1px solid #334155;">
+        ${otpCode}
+      </div>
+      <p style="font-size:12px;color:#94a3b8;line-height:1.5;">This code expires in <strong>10 minutes</strong>. If you did not initiate a payout request, please contact ATFunding risk desk immediately.</p>
+    </div>`;
+
+    await setDoc(doc(db, "email_queue", `queue-payout-otp-${Date.now()}`), {
+      id: `queue-payout-otp-${Date.now()}`,
+      recipient: cleanEmail,
+      subject: "ATFunding Payout Verification OTP",
+      message: emailMessage,
+      html: htmlMessage,
+      status: "pending",
+      createdAt: createdAt,
+      userId: userId
+    });
+
+    // Trigger immediate email processing
+    setTimeout(() => { processEmailQueue(); }, 100);
+
+    res.json({ success: true, message: "Payout verification OTP sent to your registered email address.", otpId });
+  } catch (error: any) {
+    console.error("Error in /api/payout/send-otp:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to send payout OTP." });
+  }
+});
+
+// Payout Verification - Verify OTP Route
+app.post("/api/payout/verify-otp", async (req, res) => {
+  try {
+    const { userId, email, otpCode } = req.body;
+    if (!userId || !email || !otpCode) {
+      res.status(400).json({ success: false, message: "UserId, email, and OTP code are required." });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = otpCode.toString().trim();
+
+    const otpRef = collection(db, "otpRequests");
+    const q = query(otpRef, where("userId", "==", userId), where("verified", "==", false));
+    const snap = await getDocs(q);
+
+    if (snap.empty) {
+      res.status(400).json({ success: false, message: "No active OTP request found. Please request a new OTP." });
+      return;
+    }
+
+    const docs = snap.docs
+      .map(d => ({ docId: d.id, ...d.data() as any }))
+      .filter(d => !d.expired);
+
+    docs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    if (docs.length === 0) {
+      res.status(400).json({ success: false, message: "No active OTP request found. Please request a new OTP." });
+      return;
+    }
+
+    const latestOtp = docs[0];
+
+    // Log verification attempt in otpVerificationLogs
+    const logId = `log-otp-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const logData = {
+      id: logId,
+      userId,
+      email: cleanEmail,
+      attemptedCode: cleanOtp,
+      timestamp: new Date().toISOString()
+    };
+
+    // 1. Check Expiry
+    if (new Date(latestOtp.expiresAt).getTime() < Date.now()) {
+      await updateDoc(doc(db, "otpRequests", latestOtp.docId), { expired: true }).catch(() => {});
+      await setDoc(doc(db, "otpVerificationLogs", logId), { ...logData, result: "EXPIRED" }).catch(() => {});
+      res.status(400).json({ success: false, message: "OTP code has expired (valid for 10 minutes). Please click Resend OTP." });
+      return;
+    }
+
+    // 2. Check Maximum Attempts (max 3)
+    if ((latestOtp.attempts || 0) >= 3) {
+      await updateDoc(doc(db, "otpRequests", latestOtp.docId), { expired: true }).catch(() => {});
+      await setDoc(doc(db, "otpVerificationLogs", logId), { ...logData, result: "MAX_ATTEMPTS_EXCEEDED" }).catch(() => {});
+      res.status(400).json({ success: false, message: "Maximum attempt limit exceeded (3 attempts max). Payout request rejected." });
+      return;
+    }
+
+    // 3. Check OTP Match
+    if (latestOtp.otpCode !== cleanOtp) {
+      const newAttempts = (latestOtp.attempts || 0) + 1;
+      const isMaxReached = newAttempts >= 3;
+
+      await updateDoc(doc(db, "otpRequests", latestOtp.docId), {
+        attempts: newAttempts,
+        expired: isMaxReached ? true : false
+      }).catch(() => {});
+
+      await setDoc(doc(db, "otpVerificationLogs", logId), { 
+        ...logData, 
+        result: isMaxReached ? "REJECTED_MAX_ATTEMPTS" : "INVALID_CODE", 
+        attemptsUsed: newAttempts 
+      }).catch(() => {});
+
+      if (isMaxReached) {
+        res.status(400).json({ 
+          success: false, 
+          message: "Invalid OTP code. Maximum 3 attempts exceeded. Payout request rejected.", 
+          maxAttemptsReached: true 
+        });
+      } else {
+        res.status(400).json({ 
+          success: false, 
+          message: `Invalid OTP code. (${newAttempts}/3 attempts used)`, 
+          attemptsLeft: 3 - newAttempts 
+        });
+      }
+      return;
+    }
+
+    // 4. Verification Success
+    await updateDoc(doc(db, "otpRequests", latestOtp.docId), {
+      verified: true,
+      verifiedAt: new Date().toISOString()
+    }).catch(() => {});
+
+    await setDoc(doc(db, "otpVerificationLogs", logId), { ...logData, result: "SUCCESS" }).catch(() => {});
+
+    res.json({ success: true, message: "OTP code verified successfully!" });
+  } catch (error: any) {
+    console.error("Error in /api/payout/verify-otp:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to verify OTP." });
+  }
 });
 
 // Forgot Password - Send OTP Route
