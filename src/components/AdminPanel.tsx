@@ -1167,6 +1167,118 @@ export default function AdminPanel() {
     }
   };
 
+  const handleActivatePhase2 = async (acc: TradingAccount) => {
+    const startBal = acc.startingBalance || acc.size || 10000;
+    const confirmP2 = window.confirm(`Activate Account #${acc.login || acc.id} (${acc.userEmail || 'User'}) to Phase 2?`);
+    if (!confirmP2) return;
+    try {
+      const phase2Target = startBal * 0.05;
+      const nowIso = new Date().toISOString();
+      await updateDoc(doc(db, 'accounts', acc.id), {
+        phase: 2,
+        status: 'active',
+        phaseStatus: 'phase2_active',
+        balance: startBal,
+        equity: startBal,
+        dailyStartingBalance: startBal,
+        dailyStartingEquity: startBal,
+        profitTarget: phase2Target,
+        updatedAt: nowIso
+      });
+
+      // In-app Notification
+      const notifId = 'NOTIF-P2-' + Math.floor(100000 + Math.random() * 900000);
+      await setDoc(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: acc.userId,
+        title: 'Phase 2 Account Activated! 🎉',
+        message: `Your Phase 2 Evaluation Account #${acc.login || acc.id} ($${startBal.toLocaleString()}) has been activated by Admin!`,
+        type: 'success',
+        read: false,
+        createdAt: nowIso
+      }).catch(() => {});
+
+      // Queue welcome email
+      const recipientEmail = acc.userEmail || '';
+      if (recipientEmail) {
+        await setDoc(doc(db, 'email_queue', `queue-p2-${Date.now()}`), {
+          id: `queue-p2-${Date.now()}`,
+          recipient: recipientEmail,
+          subject: `ATFunding: Phase 2 Activated for Account #${acc.login || acc.id}`,
+          message: `Hello,\n\nYour Phase 2 Evaluation Account #${acc.login || acc.id} ($${startBal.toLocaleString()}) is now ACTIVE!\n\nLog in to your terminal to start trading.\n\nATFunding Admin Desk`,
+          html: `<div style="font-family:sans-serif;padding:24px;background:#0b0f19;color:#f8fafc;border-radius:16px;">
+            <h2 style="color:#38bdf8;">Phase 2 Account Activated! 🎉</h2>
+            <p>Your Phase 2 Account <strong>#${acc.login || acc.id}</strong> ($${startBal.toLocaleString()}) is now ready.</p>
+          </div>`,
+          status: 'pending',
+          createdAt: nowIso,
+          userId: acc.userId
+        }).catch(() => {});
+      }
+
+      alert(`Account #${acc.login || acc.id} successfully activated to Phase 2!`);
+      fetchAllData();
+    } catch (err: any) {
+      alert("Error activating Phase 2: " + err.message);
+    }
+  };
+
+  const handleActivateFunded = async (acc: TradingAccount) => {
+    const startBal = acc.startingBalance || acc.size || 10000;
+    const confirmFunded = window.confirm(`Activate Account #${acc.login || acc.id} (${acc.userEmail || 'User'}) as LIVE FUNDED ACCOUNT (Phase 3)?`);
+    if (!confirmFunded) return;
+    try {
+      const nowIso = new Date().toISOString();
+      await updateDoc(doc(db, 'accounts', acc.id), {
+        phase: 3,
+        accountType: 'funded',
+        status: 'active',
+        phaseStatus: 'funded',
+        balance: startBal,
+        equity: startBal,
+        dailyStartingBalance: startBal,
+        dailyStartingEquity: startBal,
+        profitTarget: 0,
+        updatedAt: nowIso
+      });
+
+      // In-app Notification
+      const notifId = 'NOTIF-FUNDED-' + Math.floor(100000 + Math.random() * 900000);
+      await setDoc(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: acc.userId,
+        title: 'Live Funded Account Activated! 🚀',
+        message: `Congratulations! Your Live Funded Account #${acc.login || acc.id} ($${startBal.toLocaleString()}) is now ACTIVE!`,
+        type: 'success',
+        read: false,
+        createdAt: nowIso
+      }).catch(() => {});
+
+      // Queue welcome email
+      const recipientEmail = acc.userEmail || '';
+      if (recipientEmail) {
+        await setDoc(doc(db, 'email_queue', `queue-funded-${Date.now()}`), {
+          id: `queue-funded-${Date.now()}`,
+          recipient: recipientEmail,
+          subject: `ATFunding: Live Funded Account Activated #${acc.login || acc.id}`,
+          message: `Hello,\n\nYour Live Funded Account #${acc.login || acc.id} ($${startBal.toLocaleString()}) is now ACTIVE!\n\nYou are now eligible for profit split payouts.\n\nATFunding Admin Desk`,
+          html: `<div style="font-family:sans-serif;padding:24px;background:#0b0f19;color:#f8fafc;border-radius:16px;">
+            <h2 style="color:#22c55e;">Live Funded Account Activated! 🚀</h2>
+            <p>Your Live Funded Account <strong>#${acc.login || acc.id}</strong> ($${startBal.toLocaleString()}) is now ACTIVE.</p>
+          </div>`,
+          status: 'pending',
+          createdAt: nowIso,
+          userId: acc.userId
+        }).catch(() => {});
+      }
+
+      alert(`Account #${acc.login || acc.id} successfully activated as Live Funded Account!`);
+      fetchAllData();
+    } catch (err: any) {
+      alert("Error activating Live Funded Account: " + err.message);
+    }
+  };
+
   const handleCreateAccountManually = async (isGiveaway = false) => {
     if (!selectedUserId) {
       setManualAccountMsg("Please choose a target user first.");
@@ -5343,59 +5455,26 @@ export default function AdminPanel() {
                                     </button>
                                   )}
 
-                                  {/* Promote Phase Option */}
+                                  {/* Activate Phase 2 Option */}
                                   <button
                                     type="button"
-                                    onClick={async () => {
-                                      const nowIso = new Date().toISOString();
-                                      const currentPhase = acc.phase || 1;
-                                      if (currentPhase === 1) {
-                                        const confirmP2 = window.confirm(`Promote Account #${acc.login || acc.id} to Phase 2?`);
-                                        if (!confirmP2) return;
-                                        try {
-                                          await updateDoc(doc(db, 'accounts', acc.id), {
-                                            phase: 2,
-                                            status: 'active',
-                                            phaseStatus: 'phase2_active',
-                                            balance: startBal,
-                                            equity: startBal,
-                                            dailyStartingBalance: startBal,
-                                            dailyStartingEquity: startBal,
-                                            profitTarget: startBal * 0.05
-                                          });
-                                          alert(`Account #${acc.login || acc.id} promoted to Phase 2!`);
-                                          fetchAllData();
-                                        } catch (err: any) {
-                                          alert("Error promoting: " + err.message);
-                                        }
-                                      } else if (currentPhase === 2) {
-                                        const confirmFunded = window.confirm(`Promote Account #${acc.login || acc.id} to Live Funded (Phase 3)?`);
-                                        if (!confirmFunded) return;
-                                        try {
-                                          await updateDoc(doc(db, 'accounts', acc.id), {
-                                            phase: 3,
-                                            accountType: 'funded',
-                                            status: 'active',
-                                            phaseStatus: 'funded',
-                                            balance: startBal,
-                                            equity: startBal,
-                                            dailyStartingBalance: startBal,
-                                            dailyStartingEquity: startBal,
-                                            profitTarget: 0
-                                          });
-                                          alert(`Account #${acc.login || acc.id} promoted to Live Funded Account!`);
-                                          fetchAllData();
-                                        } catch (err: any) {
-                                          alert("Error promoting: " + err.message);
-                                        }
-                                      } else {
-                                        alert("Account is already in Live Funded status.");
-                                      }
-                                    }}
-                                    title="Promote Phase / Pass Target"
-                                    className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-slate-950 rounded-lg text-[10px] font-bold uppercase transition-all"
+                                    onClick={() => handleActivatePhase2(acc)}
+                                    title="Activate Phase 2 Account"
+                                    className="px-2 py-1 bg-cyan-600/20 hover:bg-cyan-500 border border-cyan-500/40 text-cyan-300 hover:text-slate-950 rounded-lg text-[10px] font-bold uppercase transition-all shadow-sm shadow-cyan-500/10 flex items-center gap-1 cursor-pointer whitespace-nowrap"
                                   >
-                                    Promote
+                                    <Sparkles className="w-3 h-3 text-cyan-400 shrink-0" />
+                                    <span>Activate Phase 2</span>
+                                  </button>
+
+                                  {/* Activate Funded Account Option */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleActivateFunded(acc)}
+                                    title="Activate Live Funded Account"
+                                    className="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-500 border border-emerald-500/40 text-emerald-300 hover:text-slate-950 rounded-lg text-[10px] font-bold uppercase transition-all shadow-sm shadow-emerald-500/20 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <Shield className="w-3 h-3 text-emerald-400 shrink-0" />
+                                    <span>Activate Funded</span>
                                   </button>
 
                                   {/* Delete Account Option */}
