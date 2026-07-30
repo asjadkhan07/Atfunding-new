@@ -362,14 +362,13 @@ export default function LeaderboardView({
                 <th className="py-4 px-5">💰 Total Profit</th>
                 <th className="py-4 px-5">📈 Win Rate</th>
                 <th className="py-4 px-5">🎯 Account Type</th>
-                <th className="py-4 px-5">🔥 Status</th>
                 {isAdmin && <th className="py-4 px-5 text-right">⚙️ Admin Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5 text-xs text-slate-200">
               {filteredEntries.length === 0 ? (
                 <tr>
-                  <td colSpan={isAdmin ? 7 : 6} className="py-16 text-center text-slate-500">
+                  <td colSpan={isAdmin ? 6 : 5} className="py-16 text-center text-slate-500">
                     <Trophy className="w-12 h-12 text-slate-700 mx-auto mb-2" />
                     <p className="font-bold text-sm text-slate-400">No Traders Found</p>
                     <p className="text-xs text-slate-600">Traders who purchase or activate accounts automatically appear here.</p>
@@ -428,11 +427,6 @@ export default function LeaderboardView({
                                 </span>
                               )}
                             </div>
-                            {entry.email && isAdmin && (
-                              <div className="text-[10px] text-slate-500 font-mono truncate max-w-[180px]">
-                                {entry.email}
-                              </div>
-                            )}
                           </div>
                         </div>
                       </td>
@@ -457,30 +451,6 @@ export default function LeaderboardView({
                         <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-slate-300 text-[11px]">
                           {entry.accountType} ({entry.accountSize})
                         </span>
-                      </td>
-
-                      {/* Status Badge */}
-                      <td className="py-4 px-5">
-                        {entry.status === 'Payout' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 uppercase tracking-wider">
-                            <DollarSign className="w-3 h-3" /> Payout Badge
-                          </span>
-                        )}
-                        {entry.status === 'Funded' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 uppercase tracking-wider">
-                            <Award className="w-3 h-3" /> Funded Badge
-                          </span>
-                        )}
-                        {entry.status === 'Active' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 uppercase tracking-wider">
-                            <Shield className="w-3 h-3" /> Active
-                          </span>
-                        )}
-                        {entry.status === 'Breached' && (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 border border-rose-500/30 text-rose-400 uppercase tracking-wider">
-                            <AlertTriangle className="w-3 h-3" /> Breached
-                          </span>
-                        )}
                       </td>
 
                       {/* Admin Controls */}

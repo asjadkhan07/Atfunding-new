@@ -72,6 +72,17 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
   const [cryptoMethod, setCryptoMethod] = useState<'Bitcoin (BTC)' | 'USDT TRC20' | 'USDT ERC20' | 'Litecoin (LTC)' | 'UPI'>('USDT TRC20');
   const [walletAddresses, setWalletAddresses] = useState<PaymentSettings>(DEFAULT_WALLET_ADDRESSES);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [currencyMode, setCurrencyMode] = useState<'USD' | 'INR'>('USD');
+  const USD_TO_INR = 88;
+
+  const formatDisplayPrice = (usdAmount: number, forceCurrency?: 'USD' | 'INR') => {
+    const mode = forceCurrency || currencyMode;
+    if (mode === 'INR') {
+      const inrVal = Math.round(usdAmount * USD_TO_INR);
+      return `₹${inrVal.toLocaleString('en-IN')}`;
+    }
+    return `$${usdAmount.toFixed(usdAmount % 1 === 0 ? 0 : 2)}`;
+  };
 
   // File Screenshot State
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
@@ -843,11 +854,40 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
 
             {/* Account Sizing Cards - FundedSquad Style */}
             <div className="bg-gradient-to-b from-slate-900 to-slate-950 border border-white/10 rounded-3xl p-6 space-y-5 backdrop-blur-md shadow-2xl">
-              <div className="flex justify-between items-center">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <label className="text-xs font-black text-slate-300 uppercase tracking-widest block">2. Select Account Size & Parameters</label>
-                <span className="text-[10px] font-mono font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full uppercase">
-                  {selectedType === 'trial' ? 'Free Trial' : selectedType === 'instant_bolt' ? 'Instant Funding' : selectedType.replace('_', ' ')}
-                </span>
+                
+                <div className="flex items-center gap-2">
+                  {/* Currency Switcher Buttons */}
+                  <div className="flex items-center bg-black/60 border border-white/10 rounded-xl p-1 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setCurrencyMode('USD')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 ${
+                        currencyMode === 'USD'
+                          ? 'bg-blue-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span>🇺🇸 USD ($)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrencyMode('INR')}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1 ${
+                        currencyMode === 'INR'
+                          ? 'bg-emerald-600 text-white shadow-md ring-1 ring-emerald-400'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <span>🇮🇳 INR (₹ UPI)</span>
+                    </button>
+                  </div>
+
+                  <span className="text-[10px] font-mono font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full uppercase">
+                    {selectedType === 'trial' ? 'Free Trial' : selectedType === 'instant_bolt' ? 'Instant Funding' : selectedType.replace('_', ' ')}
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -937,7 +977,12 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                         <div>
                           <span className="text-[10px] uppercase font-mono text-slate-500 block">Account Price</span>
                           <span className="text-xl font-black text-white font-mono">
-                            ${discountedPrice.toFixed(0)}
+                            {formatDisplayPrice(discountedPrice)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono block">
+                            {currencyMode === 'INR' 
+                              ? `($${discountedPrice.toFixed(0)} USD)` 
+                              : `(~₹${Math.round(discountedPrice * USD_TO_INR).toLocaleString('en-IN')})`}
                           </span>
                         </div>
                         <button
@@ -968,7 +1013,7 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                         <div className="flex items-center gap-2">
                           <h4 className="text-sm font-black text-white tracking-wider uppercase">REMOVE 2 MINUTE RULE</h4>
                           <span className="px-2 py-0.5 text-[9px] font-mono font-bold rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                            +$10 ADDON
+                            +{formatDisplayPrice(10)} ADDON
                           </span>
                         </div>
                         <p className="text-xs text-slate-400 mt-0.5">
@@ -983,7 +1028,9 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                           ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' 
                           : 'bg-slate-800 text-slate-400 border-slate-700'
                       }`}>
-                        {holdRuleUpgradePurchased ? 'ON = Rule Removed (+$10)' : 'OFF = Rule Active'}
+                        {holdRuleUpgradePurchased 
+                          ? `ON = Rule Removed (+${formatDisplayPrice(10)})` 
+                          : 'OFF = Rule Active'}
                       </span>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input 
@@ -1080,7 +1127,7 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                 <div className="flex justify-between text-slate-400">
                   <span>Original Fee</span>
                   <span className="text-white font-semibold font-mono">
-                    ${selectedPkg.price}
+                    {formatDisplayPrice(selectedPkg.price)}
                   </span>
                 </div>
 
@@ -1089,7 +1136,7 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                     <span>Discount Applied ({appliedCoupon.code})</span>
                     <span className="font-semibold font-mono">
                       {appliedCoupon.discountType === 'fixed' || (appliedCoupon.discountAmount && appliedCoupon.discountAmount > 0 && !appliedCoupon.discountPercent)
-                        ? `-$${appliedCoupon.discountAmount?.toFixed(2)}`
+                        ? `-${formatDisplayPrice(appliedCoupon.discountAmount || 0)}`
                         : `-${appliedCoupon.discountPercent}%`
                       }
                     </span>
@@ -1136,9 +1183,16 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
 
               <div className="flex justify-between items-baseline pt-4 border-t border-white/10">
                 <span className="text-base font-bold text-white">Grand Fee Total</span>
-                <span className="text-3xl font-bold text-blue-400 font-mono font-bold">
-                  ${calculateTotal().toFixed(2)}
-                </span>
+                <div className="text-right">
+                  <span className="text-3xl font-bold text-blue-400 font-mono block font-bold">
+                    {formatDisplayPrice(calculateTotal())}
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-mono font-normal block mt-0.5">
+                    {currencyMode === 'INR' 
+                      ? `(~$${calculateTotal().toFixed(2)} USD @ ₹${USD_TO_INR}/$)` 
+                      : `(~₹${Math.round(calculateTotal() * USD_TO_INR).toLocaleString('en-IN')})`}
+                  </span>
+                </div>
               </div>
 
               {/* BOGO Offer Banner */}
@@ -1380,21 +1434,33 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
 
               {/* crypto / UPI selection methods */}
               <div className="space-y-2.5">
-                <label className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Select Payment Method</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Select Payment Method</label>
+                  <span className="text-[10px] text-emerald-400 font-mono font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                    1 USD = ₹{USD_TO_INR} INR
+                  </span>
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
                   {(['Bitcoin (BTC)', 'USDT TRC20', 'USDT ERC20', 'Litecoin (LTC)', 'UPI'] as const).map((method) => (
                     <button
                       key={method}
                       type="button"
-                      onClick={() => setCryptoMethod(method)}
+                      onClick={() => {
+                        setCryptoMethod(method);
+                        if (method === 'UPI') {
+                          setCurrencyMode('INR');
+                        }
+                      }}
                       className={`h-12 rounded-xl border flex items-center justify-center text-xs font-bold gap-1.5 transition-all ${
                         cryptoMethod === method 
-                          ? 'border-blue-500 bg-blue-500/10 text-white shadow-md' 
+                          ? method === 'UPI'
+                            ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300 shadow-md ring-1 ring-emerald-500/50'
+                            : 'border-blue-500 bg-blue-500/10 text-white shadow-md' 
                           : 'border-white/10 text-slate-400 hover:text-white hover:bg-white/5'
                       }`}
                     >
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                      <span>{method}</span>
+                      <span className={`w-1.5 h-1.5 rounded-full ${method === 'UPI' ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'}`} />
+                      <span>{method === 'UPI' ? '🇮🇳 UPI (INR ₹)' : method}</span>
                     </button>
                   ))}
                 </div>
@@ -1404,10 +1470,14 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
               <div className="bg-black/40 border border-white/10 rounded-2xl p-4 space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                    {cryptoMethod === 'UPI' ? 'Pay to UPI ID' : 'Transfer to Wallet Address'}
+                    {cryptoMethod === 'UPI' ? 'Pay to UPI ID (INR ₹)' : 'Transfer to Wallet Address'}
                   </span>
-                  <span className="text-[10px] text-blue-400 font-semibold bg-blue-500/10 border border-blue-500/25 px-2 py-0.5 rounded-md uppercase font-mono">
-                    {cryptoMethod.split(' ')[0]}
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md uppercase font-mono ${
+                    cryptoMethod === 'UPI' 
+                      ? 'text-emerald-300 bg-emerald-500/20 border border-emerald-500/30'
+                      : 'text-blue-400 bg-blue-500/10 border border-blue-500/25'
+                  }`}>
+                    {cryptoMethod === 'UPI' ? 'UPI INR' : cryptoMethod.split(' ')[0]}
                   </span>
                 </div>
 
@@ -1440,7 +1510,9 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                       className="w-40 h-40 object-contain rounded-lg border border-white/10 p-1.5 bg-white"
                       referrerPolicy="no-referrer"
                     />
-                    <span className="text-[10px] font-mono text-slate-400">Scan to pay automatically</span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {cryptoMethod === 'UPI' ? 'Scan with Google Pay, PhonePe, Paytm or BHIM' : 'Scan to pay automatically'}
+                    </span>
                   </div>
                 )}
 
@@ -1450,10 +1522,19 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                   </p>
                 )}
 
-                <div className="text-[11px] text-slate-400 bg-slate-800/20 p-2.5 rounded-xl leading-relaxed">
-                  <strong>Instruction:</strong> Send exactly <span className="font-mono text-white">
-                    ${calculateTotal().toFixed(2)} USD
-                  </span> worth of {cryptoMethod.split(' ')[0]} to the details above. Make sure to transfer using the correct network / ID.
+                <div className="text-[11px] text-slate-400 bg-slate-800/20 p-3 rounded-xl leading-relaxed space-y-1">
+                  <p>
+                    <strong>Instruction:</strong> Send exactly <span className="font-mono text-emerald-300 font-extrabold">
+                      {cryptoMethod === 'UPI' || currencyMode === 'INR' 
+                        ? `₹${Math.round(calculateTotal() * USD_TO_INR).toLocaleString('en-IN')} INR ($${calculateTotal().toFixed(2)} USD)` 
+                        : `$${calculateTotal().toFixed(2)} USD (~₹${Math.round(calculateTotal() * USD_TO_INR).toLocaleString('en-IN')})`}
+                    </span> to the payment details above. Make sure to enter the payment reference ID below.
+                  </p>
+                  {cryptoMethod === 'UPI' && (
+                    <p className="text-[10px] text-emerald-400 font-semibold font-mono pt-1 border-t border-white/5 mt-1">
+                      ⚡ USD to INR converted at rate 1 USD = ₹{USD_TO_INR} INR.
+                    </p>
+                  )}
                 </div>
               </div>
 
