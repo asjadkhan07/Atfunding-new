@@ -16,6 +16,7 @@ import { getDocsCached } from '../lib/firestoreCache';
 import { ensureUserAffiliateCode, getOfficialAffiliateLink } from '../utils/affiliateManager';
 
 // Subcomponents
+import { auditAccount, calculateAccountRiskScore, getMaxLotSize, getProfitableTradingDays, detectGamblingBehavior } from '../core/riskEngine';
 import BuyAccountPanel from './BuyAccountPanel';
 import TradingTerminal from './TradingTerminal';
 import CertificatesView from './CertificatesView';
@@ -1033,6 +1034,21 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     return () => unsubscribe();
   }, [user.uid]);
 
+  // Real-time trades listener for risk metrics & audit calculations
+  const [userTrades, setUserTrades] = useState<any[]>([]);
+  useEffect(() => {
+    if (!user?.uid) return;
+    const q = query(collection(db, 'trades'), where('userId', '==', user.uid));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach((d) => list.push({ id: d.id, ...d.data() }));
+      setUserTrades(list);
+    }, (err) => {
+      console.warn("User trades listener notice:", err);
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
   // Sync Payouts, Affiliates and Certificates
   useEffect(() => {
     if (!user?.uid) return;
@@ -1172,9 +1188,26 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       return;
     }
 
-    const maxEligible = selectedAccount.balance - selectedAccount.startingBalance;
+    // Payout Protection & Rule Audit
+    const accountClosedTrades = userTrades.filter(
+      (t) => (t.status === 'closed' || t.statusUpper === 'CLOSED' || t.closeTime) &&
+             (String(t.accountId) === String(selectedAccount.id) || String(t.accountId) === String(selectedAccount.login))
+    );
+    const accountOpenTrades = userTrades.filter(
+      (t) => (t.status === 'open' || t.statusUpper === 'OPEN') &&
+             (String(t.accountId) === String(selectedAccount.id) || String(t.accountId) === String(selectedAccount.login))
+    );
+
+    const auditRes = auditAccount(selectedAccount, accountClosedTrades, accountOpenTrades);
+
+    if (!auditRes.canRequestPayout) {
+      setPayoutMsg(`🚫 Payout Protected: ${auditRes.payoutBlockedReason}`);
+      return;
+    }
+
+    const maxEligible = auditRes.expectedBalance - auditRes.startingBalance;
     if (maxEligible <= 0) {
-      setPayoutMsg("No profit balance available on this account to withdraw.");
+      setPayoutMsg("No net profit balance available on this account to withdraw.");
       return;
     }
 
@@ -1746,17 +1779,15 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                         </div>
                         <div className="flex justify-between border-b border-white/10 pb-2">
                           <span className="text-slate-400">Profit Split</span>
-                          <span className="text-emerald-400 font-bold font-mono">{selectedAccount.accountType === 'trial' ? '30%' : '80%'}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-white/10 pb-2">
-                          <span className="text-slate-400">Min Trading Days</span>
-                          <span className="text-white font-bold font-mono">
-                            {selectedAccount.accountType === 'instant_bolt' || selectedAccount.accountType === 'trial' ? '0 Days' : '4 Days'}
+                          <span className="text-emerald-400 font-bold font-mono">
+                            {selectedAccount.accountType === 'instant_bolt' ? '70%' : selectedAccount.accountType === 'trial' ? '30%' : '80%'}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-400">Consistency Rule</span>
-                          <span className="text-slate-400 font-bold uppercase tracking-wider text-[10px]">None</span>
+                          <span className="text-slate-400">Min Trading Days</span>
+                          <span className="text-white font-bold font-mono">
+                            {selectedAccount.accountType === 'instant_bolt' || selectedAccount.accountType === 'trial' ? 'None' : '4 Days'}
+                          </span>
                         </div>
                       </div>
                     </div>

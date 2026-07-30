@@ -7,7 +7,7 @@ import {
 import { CHALLENGE_PACKAGES, ChallengePackage, getAccountDrawdownLimits } from '../constants';
 import RulesCard from './RulesCard';
 import { db, auth, storage, handleFirestoreError, OperationType } from '../firebase';
-import { collection, doc, setDoc, getDoc, onSnapshot, addDoc, query, where, getDocs, limit } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, updateDoc, increment, onSnapshot, addDoc, query, where, getDocs, limit } from 'firebase/firestore';
 import { getDocsCached } from '../lib/firestoreCache';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Order, PaymentSettings, Coupon } from '../types';
@@ -47,7 +47,9 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
   const [couponCode, setCouponCode] = useState('');
   const [appliedCoupon, setAppliedCoupon] = useState<{
     code: string;
-    discountPercent: number;
+    discountType?: 'percent' | 'fixed';
+    discountPercent?: number;
+    discountAmount?: number;
     applicableAccountTypes?: string[];
     applicablePackages?: string[];
   } | null>(null);
@@ -224,53 +226,118 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
     setCouponError('');
     setCouponSuccess('');
 
-    const codeUpper = couponCode.toUpperCase();
+    const inputClean = couponCode.trim();
+    const codeUpper = inputClean.toUpperCase();
 
     try {
-      const q = query(collection(db, 'coupons'), where('code', '==', codeUpper), where('active', '==', true));
-      const querySnapshot = await getDocs(q);
-      
-      if (!querySnapshot.empty) {
-        const couponData = querySnapshot.docs[0].data() as Coupon;
-        const allowedTypes = couponData.applicableAccountTypes || [];
-        const allowedPackages = couponData.applicablePackages || [];
+      let couponData: Coupon | null = null;
 
-        const isAllTypes = !allowedTypes.length || allowedTypes.includes('all');
-        const isTypeAllowed = isAllTypes || allowedTypes.includes(selectedType);
+      // 1. First check in real-time cached active coupons
+      const matchedLocal = availableCoupons.find(
+        c => c.code?.trim().toUpperCase() === codeUpper || (c.id && c.id.trim().toUpperCase() === codeUpper)
+      );
 
-        const isAllPackages = !allowedPackages.length || allowedPackages.includes('all');
-        const isPackageAllowed = isAllPackages || allowedPackages.includes(selectedPkg.id);
+      if (matchedLocal) {
+        couponData = matchedLocal;
+      } else {
+        // 2. Direct document fetch by uppercase code
+        const docSnap = await getDoc(doc(db, 'coupons', codeUpper));
+        if (docSnap.exists()) {
+          couponData = { id: docSnap.id, ...docSnap.data() } as Coupon;
+        } else {
+          // 3. Firestore query by code field
+          const q = query(collection(db, 'coupons'), where('code', '==', codeUpper));
+          const querySnapshot = await getDocs(q);
+          if (!querySnapshot.empty) {
+            couponData = { id: querySnapshot.docs[0].id, ...querySnapshot.docs[0].data() } as Coupon;
+          } else {
+            // 4. Fallback case-insensitive scan across all coupons
+            const allCouponsSnap = await getDocs(collection(db, 'coupons'));
+            allCouponsSnap.forEach(d => {
+              const data = d.data() as Coupon;
+              if (data.code?.trim().toUpperCase() === codeUpper || d.id.trim().toUpperCase() === codeUpper) {
+                couponData = { id: d.id, ...data };
+              }
+            });
+          }
+        }
+      }
 
-        if (!isTypeAllowed || !isPackageAllowed) {
-          const typeLabels: Record<string, string> = {
-            one_step: 'One Step Challenge',
-            two_step: 'Two Step Challenge',
-            payout_later: 'Payout Later Challenge',
-            instant_bolt: 'Instant Bolt Account',
-            trial: 'AT Trial Account'
-          };
+      if (!couponData) {
+        setCouponError(`Invalid coupon code '${inputClean}'.`);
+        return;
+      }
 
-          const validLabels = allowedTypes
-            .filter(t => t !== 'all')
-            .map(t => typeLabels[t] || t);
+      // Check active status
+      if (couponData.active === false) {
+        setCouponError(`Coupon code '${couponData.code}' is currently inactive or disabled.`);
+        return;
+      }
 
-          const currentLabel = typeLabels[selectedType] || selectedType;
-          const validText = validLabels.length > 0 ? `Valid accounts: ${validLabels.join(', ')}` : 'Valid for other specific accounts';
-
-          setCouponError(`Coupon '${codeUpper}' is not applicable for ${currentLabel}. ${validText}.`);
+      // Expiry Date Validation
+      if (couponData.expiresAt) {
+        const expTime = new Date(couponData.expiresAt).getTime();
+        const adjustedExp = couponData.expiresAt.length === 10 ? expTime + 86399000 : expTime;
+        if (!isNaN(adjustedExp) && adjustedExp < Date.now()) {
+          setCouponError(`Coupon code '${couponData.code}' expired on ${new Date(adjustedExp).toLocaleDateString()}.`);
           return;
         }
-
-        setAppliedCoupon({
-          code: codeUpper,
-          discountPercent: couponData.discountPercent,
-          applicableAccountTypes: allowedTypes,
-          applicablePackages: allowedPackages
-        });
-        setCouponSuccess(`Coupon applied! ${couponData.discountPercent}% discount added.`);
-      } else {
-        setCouponError('Invalid or expired coupon code.');
       }
+
+      // Usage Limit Validation
+      if (couponData.maxUses && couponData.maxUses > 0) {
+        const used = couponData.usedCount || 0;
+        if (used >= couponData.maxUses) {
+          setCouponError(`Coupon code '${couponData.code}' has reached its maximum usage limit (${used}/${couponData.maxUses}).`);
+          return;
+        }
+      }
+
+      // Applicability check
+      const allowedTypes = couponData.applicableAccountTypes || [];
+      const allowedPackages = couponData.applicablePackages || [];
+
+      const isAllTypes = !allowedTypes.length || allowedTypes.includes('all');
+      const isTypeAllowed = isAllTypes || allowedTypes.includes(selectedType);
+
+      const isAllPackages = !allowedPackages.length || allowedPackages.includes('all');
+      const isPackageAllowed = isAllPackages || allowedPackages.includes(selectedPkg.id);
+
+      if (!isTypeAllowed || !isPackageAllowed) {
+        const typeLabels: Record<string, string> = {
+          one_step: 'One Step Challenge',
+          two_step: 'Two Step Challenge',
+          payout_later: 'Payout Later Challenge',
+          instant_bolt: 'Instant Bolt Account',
+          trial: 'AT Trial Account'
+        };
+
+        const validLabels = allowedTypes
+          .filter(t => t !== 'all')
+          .map(t => typeLabels[t] || t);
+
+        const currentLabel = typeLabels[selectedType] || selectedType;
+        const validText = validLabels.length > 0 ? `Valid for: ${validLabels.join(', ')}` : 'Valid for other account types';
+
+        setCouponError(`Coupon '${couponData.code}' is not applicable for ${currentLabel}. ${validText}.`);
+        return;
+      }
+
+      const discType = couponData.discountType || (couponData.discountAmount && couponData.discountAmount > 0 && !couponData.discountPercent ? 'fixed' : 'percent');
+      const pctVal = couponData.discountPercent || 0;
+      const amtVal = couponData.discountAmount || 0;
+
+      setAppliedCoupon({
+        code: couponData.code.toUpperCase(),
+        discountType: discType,
+        discountPercent: pctVal,
+        discountAmount: amtVal,
+        applicableAccountTypes: allowedTypes,
+        applicablePackages: allowedPackages
+      });
+
+      const discText = discType === 'fixed' ? `$${amtVal} OFF` : `${pctVal}% OFF`;
+      setCouponSuccess(`Coupon '${couponData.code}' applied! (${discText})`);
     } catch (error) {
       console.warn("Error fetching coupon from DB (handled):", error);
       setCouponError('Error verifying coupon.');
@@ -318,7 +385,12 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
       basePrice += 10;
     }
     if (appliedCoupon) {
-      return Math.max(0, basePrice - (basePrice * appliedCoupon.discountPercent / 100));
+      if (appliedCoupon.discountType === 'fixed' || (appliedCoupon.discountAmount && appliedCoupon.discountAmount > 0 && !appliedCoupon.discountPercent)) {
+        return Math.max(0, basePrice - (appliedCoupon.discountAmount || 0));
+      } else {
+        const pct = appliedCoupon.discountPercent || 0;
+        return Math.max(0, basePrice - (basePrice * (pct / 100)));
+      }
     }
     return basePrice;
   };
@@ -641,6 +713,17 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
       // 4. Save Order to Firestore
       await setDoc(doc(db, 'orders', orderId), newOrder);
 
+      // Increment coupon usage count in Firestore if coupon applied
+      if (appliedCoupon) {
+        try {
+          await updateDoc(doc(db, 'coupons', appliedCoupon.code), {
+            usedCount: increment(1)
+          });
+        } catch (err) {
+          console.warn("Could not increment coupon usedCount:", err);
+        }
+      }
+
       // Trigger checkout/purchase receipt email in background queue
       try {
         const { triggerPurchaseEmail } = await import('../utils/emailTriggers');
@@ -807,20 +890,30 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                           )}
                         </div>
 
-                        {/* FundedSquad Specs Block */}
+                        {/* Package Specs Block */}
                         <div className="mt-4 space-y-2 text-xs font-mono">
                           <div className="flex justify-between py-1 border-b border-white/5">
                             <span className="text-slate-400">Profit Target:</span>
-                            <span className="font-bold text-emerald-400">{pTarget}</span>
+                            <span className="font-bold text-emerald-400">{pkg.type === 'instant_bolt' ? 'No Target' : pTarget}</span>
                           </div>
                           <div className="flex justify-between py-1 border-b border-white/5">
-                            <span className="text-slate-400">Daily Drawdown:</span>
-                            <span className="font-bold text-amber-400">{dDrawdown}</span>
+                            <span className="text-slate-400">{pkg.type === 'instant_bolt' ? 'Minimum Loss:' : 'Daily Drawdown:'}</span>
+                            <span className="font-bold text-amber-400">
+                              {pkg.type === 'instant_bolt' ? `$${(pkg.size * 0.0225).toLocaleString(undefined, { maximumFractionDigits: 1 })}` : dDrawdown}
+                            </span>
                           </div>
                           <div className="flex justify-between py-1 border-b border-white/5">
-                            <span className="text-slate-400">Max Drawdown:</span>
-                            <span className="font-bold text-red-400">{mDrawdown}</span>
+                            <span className="text-slate-400">{pkg.type === 'instant_bolt' ? 'Maximum Loss:' : 'Max Drawdown:'}</span>
+                            <span className="font-bold text-red-400">
+                              {pkg.type === 'instant_bolt' ? `$${(pkg.size * 0.05).toLocaleString(undefined, { maximumFractionDigits: 1 })}` : mDrawdown}
+                            </span>
                           </div>
+                          {pkg.type === 'instant_bolt' && (
+                            <div className="flex justify-between py-1 border-b border-white/5">
+                              <span className="text-slate-400">Min Trading Days:</span>
+                              <span className="font-bold text-slate-200">None</span>
+                            </div>
+                          )}
                           <div className="flex justify-between py-1 border-b border-white/5">
                             <span className="text-slate-400">Profit Split:</span>
                             <span className="font-bold text-blue-400">{pSplit}</span>
@@ -987,7 +1080,12 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                 {appliedCoupon && (
                   <div className="flex justify-between text-emerald-400">
                     <span>Discount Applied ({appliedCoupon.code})</span>
-                    <span className="font-semibold font-mono">-{appliedCoupon.discountPercent}%</span>
+                    <span className="font-semibold font-mono">
+                      {appliedCoupon.discountType === 'fixed' || (appliedCoupon.discountAmount && appliedCoupon.discountAmount > 0 && !appliedCoupon.discountPercent)
+                        ? `-$${appliedCoupon.discountAmount?.toFixed(2)}`
+                        : `-${appliedCoupon.discountPercent}%`
+                      }
+                    </span>
                   </div>
                 )}
               </div>

@@ -1,4 +1,4 @@
-import { subscribeToPrices, SymbolPrice, DECIMAL_PLACES, priceEngineState, BASE_MID_PRICES, TICK_STEP_MAP } from './priceEngine';
+import { subscribeToPrices, SymbolPrice, DECIMAL_PLACES, priceEngineState, BASE_MID_PRICES, TICK_STEP_MAP, stringToSeed, createSeededRandom } from './priceEngine';
 import { notifyCandleCloseForSpike } from './spikeEngine';
 
 export interface Candle {
@@ -55,7 +55,7 @@ function openDB(): Promise<IDBDatabase> {
       reject(new Error('IndexedDB not supported'));
       return;
     }
-    const request = indexedDB.open('ATFundingTerminalDB_v9', 1);
+    const request = indexedDB.open('ATFundingTerminalDB_v11', 1);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('candles_1m')) {
@@ -70,6 +70,8 @@ function openDB(): Promise<IDBDatabase> {
 export async function purgeAllIndexedDB(): Promise<void> {
   if (typeof window === 'undefined' || !window.indexedDB) return;
   const dbs = [
+    'ATFundingTerminalDB_v11',
+    'ATFundingTerminalDB_v10',
     'ATFundingTerminalDB_v9',
     'ATFundingTerminalDB_v8',
     'ATFundingTerminalDB_v7',
@@ -117,8 +119,8 @@ function saveM1CandlesToDB(db: IDBDatabase, symbol: string, candles: Candle[]): 
   });
 }
 
-const LS_M1_PREFIX = 'atfunding_m1_candles_V6_';
-const LS_TREND_MGR_PREFIX = 'atfunding_trend_mgr_v5_';
+const LS_M1_PREFIX = 'atfunding_m1_candles_V7_';
+const LS_TREND_MGR_PREFIX = 'atfunding_trend_mgr_v6_';
 
 export function loadTrendEngineManager(symbol: string): TrendEngineManager | null {
   try {
@@ -262,17 +264,9 @@ export const SYMBOL_CANDLE_SPECS: Record<string, {
   ETHUSD: { pipValue: 1.0,     minPips: 1,  maxPips: 18, avgPips: 4.5,breakoutPips: 14 },
 };
 
-export function getMaxConsecutiveCandles(symbol: string): number {
-  if (symbol === 'XAUUSD' || symbol === 'XAGUSD') {
-    return 3 + Math.floor(Math.random() * 4);
-  }
-  if (symbol === 'BTCUSD' || symbol === 'ETHUSD') {
-    return 2 + Math.floor(Math.random() * 9);
-  }
-  if (symbol === 'NAS100' || symbol === 'US30' || symbol === 'SPX500') {
-    return 3 + Math.floor(Math.random() * 6);
-  }
-  return 3 + Math.floor(Math.random() * 5);
+export function getMaxConsecutiveCandles(_symbol: string): number {
+  // STRICT RULE 4: No more than 6 consecutive red or green candles (3-6 candles allowed)
+  return 3 + Math.floor(Math.random() * 4); // returns 3, 4, 5, or 6
 }
 
 interface TrendEngineManager {
@@ -312,9 +306,9 @@ function selectNextMarketState(prevState?: MarketRegime, lastDirection: number =
   let duration: number;
   let mainDir = 0;
 
-  if (rand < 0.50) {
+  if (rand < 0.52) {
     if (lastDirection !== 0) {
-      mainDir = Math.random() < 0.82 ? lastDirection : -lastDirection;
+      mainDir = Math.random() < 0.80 ? lastDirection : -lastDirection;
     } else {
       mainDir = Math.random() < 0.5 ? 1 : -1;
     }
@@ -388,7 +382,7 @@ function getNextCandleConfig(
   mgr.subPhaseCandles++;
   mgr.candlesSinceSweep++;
 
-  if (!mgr.maxSameColorLimit) {
+  if (!mgr.maxSameColorLimit || mgr.maxSameColorLimit > 6) {
     mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
   }
 
@@ -431,16 +425,18 @@ function getNextCandleConfig(
       mgr.subPhaseDuration = mgr.stateDuration;
     } else {
       mgr.subPhase = 'Consolidation';
-      mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
+      mgr.subPhaseDuration = 2 + Math.floor(Math.random() * 3);
     }
   }
 
   let forcePullback = false;
-  if (mgr.consecutiveSameColorCount >= mgr.maxSameColorLimit && (mgr.state === 'Trending Up' || mgr.state === 'Trending Down' || mgr.state === 'Breakout')) {
+  // STRICT RULE 1 & 4: After 3-6 consecutive same color candles (max 6), FORCE a 1-3 candle opposite retracement!
+  if (mgr.consecutiveSameColorCount >= mgr.maxSameColorLimit || mgr.consecutiveSameColorCount >= 6) {
     forcePullback = true;
     mgr.subPhase = 'Pullback';
     mgr.subPhaseCandles = 0;
-    mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
+    // Rule 1: Generate 1-3 opposite candles for natural market retracement
+    mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3); // 1, 2, or 3 candles
     mgr.consecutiveSameColorCount = 0;
     mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
 
@@ -459,9 +455,11 @@ function getNextCandleConfig(
       mgr.subPhaseCandles = 0;
       if (mgr.subPhase === 'Consolidation') {
         mgr.subPhase = 'TrendLeg';
+        // 3 to 6 candles in trend direction
         mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
       } else if (mgr.subPhase === 'TrendLeg' || mgr.subPhase === 'Continuation') {
         mgr.subPhase = 'Pullback';
+        // 1 to 3 candles opposite direction
         mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
         mgr.consecutiveSameColorCount = 0;
         mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
@@ -476,7 +474,8 @@ function getNextCandleConfig(
         }
       } else if (mgr.subPhase === 'Pullback') {
         mgr.subPhase = 'Continuation';
-        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 5);
+        // 3 to 5 candles continuation
+        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 3);
         mgr.consecutiveSameColorCount = 0;
         mgr.maxSameColorLimit = getMaxConsecutiveCandles(symbol);
         mgr.trendLegStartPrice = currentPrice;
@@ -489,13 +488,13 @@ function getNextCandleConfig(
       mgr.subPhaseCandles = 0;
       if (mgr.subPhase === 'Consolidation') {
         mgr.subPhase = 'Breakout';
-        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 2);
+        mgr.subPhaseDuration = 2 + Math.floor(Math.random() * 3);
       } else if (mgr.subPhase === 'Breakout') {
         mgr.subPhase = 'Retest';
-        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 2);
+        mgr.subPhaseDuration = 1 + Math.floor(Math.random() * 3);
       } else if (mgr.subPhase === 'Retest') {
         mgr.subPhase = 'Continuation';
-        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 4);
+        mgr.subPhaseDuration = 3 + Math.floor(Math.random() * 3);
       }
     }
   }
@@ -529,21 +528,23 @@ function getNextCandleConfig(
     driftMultiplier = 0.4 + Math.random() * 0.3;
     patternType = Math.random() < 0.35 ? 'INDECISION' : 'NORMAL';
   } else if (mgr.subPhase === 'Pullback') {
-    candleBias = -mainDir;
-    driftMultiplier = 0.8 + Math.random() * 0.3;
+    // Rule 1 & 3: Retracement candles MUST be opposite direction of the preceding trend / last candle!
+    candleBias = mgr.lastCandleColor !== 0 ? -mgr.lastCandleColor : -mainDir;
+    driftMultiplier = 0.8 + Math.random() * 0.4;
 
     const randPattern = Math.random();
-    if (randPattern < 0.30) patternType = 'PIN_BAR';
-    else if (randPattern < 0.50) patternType = 'INDECISION';
-    else if (randPattern < 0.65) patternType = 'ENGULFING';
+    if (randPattern < 0.35) patternType = 'PIN_BAR';
+    else if (randPattern < 0.60) patternType = 'INDECISION';
+    else patternType = 'NORMAL';
   } else if (mgr.state === 'Trending Up' || mgr.state === 'Trending Down') {
-    candleBias = Math.random() < 0.82 ? mainDir : -mainDir;
-    driftMultiplier = 1.1 + Math.random() * 0.4;
+    // Rule 3: ~70% trend direction, ~30% retracement / noise
+    candleBias = Math.random() < 0.72 ? mainDir : -mainDir;
+    driftMultiplier = 1.0 + Math.random() * 0.4;
 
     const randPattern = Math.random();
     if (randPattern < 0.18) patternType = 'ENGULFING';
-    else if (randPattern < 0.30) patternType = 'PIN_BAR';
-    else if (randPattern < 0.40) patternType = 'INDECISION';
+    else if (randPattern < 0.32) patternType = 'PIN_BAR';
+    else if (randPattern < 0.45) patternType = 'INDECISION';
     else if (isLiquiditySweep) patternType = 'LIQUIDITY_SWEEP';
   } else if (mgr.state === 'Range') {
     const baseMid = BASE_MID_PRICES[symbol] || currentPrice;
@@ -551,9 +552,9 @@ function getNextCandleConfig(
     const rangeBound = spec.avgPips * 10 * spec.pipValue;
 
     if (currentPrice >= (mgr.rangeMidPrice || baseMid) + rangeBound) {
-      candleBias = Math.random() < 0.82 ? -1 : 1;
+      candleBias = Math.random() < 0.80 ? -1 : 1;
     } else if (currentPrice <= (mgr.rangeMidPrice || baseMid) - rangeBound) {
-      candleBias = Math.random() < 0.82 ? 1 : -1;
+      candleBias = Math.random() < 0.80 ? 1 : -1;
     } else {
       candleBias = Math.random() < 0.50 ? 1 : -1;
     }
@@ -567,15 +568,15 @@ function getNextCandleConfig(
     const bDir = mgr.mainDirection !== 0 ? mgr.mainDirection : 1;
     if (mgr.subPhase === 'Breakout') {
       candleBias = bDir;
-      driftMultiplier = 1.6 + Math.random() * 0.6;
+      driftMultiplier = 1.5 + Math.random() * 0.5;
       patternType = 'ENGULFING';
     } else if (mgr.subPhase === 'Retest') {
       candleBias = -bDir;
       driftMultiplier = 0.6 + Math.random() * 0.3;
       patternType = 'PIN_BAR';
     } else {
-      candleBias = Math.random() < 0.80 ? bDir : -bDir;
-      driftMultiplier = 1.2 + Math.random() * 0.5;
+      candleBias = Math.random() < 0.75 ? bDir : -bDir;
+      driftMultiplier = 1.1 + Math.random() * 0.4;
     }
   }
 
@@ -590,9 +591,10 @@ function getNextCandleConfig(
 /**
  * Simulates a single 1m candle adhering strictly to:
  * - Open = previous candle Close
- * - Exact symbol pip bounds (1-15 pips EURUSD, 5-50 pips XAUUSD)
- * - Proportional body & wicks
+ * - Exact symbol pip bounds
+ * - Proportional body & wicks (Guaranteed realistic wicks on both sides)
  * - High >= max(open, close), Low <= min(open, close)
+ * - Random noise & volatility injection
  */
 function simulate1mCandleViaTicks(
   symbol: string,
@@ -605,59 +607,65 @@ function simulate1mCandleViaTicks(
   isLiquiditySweep: boolean = false,
   patternType: PatternType = 'NORMAL'
 ): Candle {
+  const rng = createSeededRandom(stringToSeed(`${symbol}_1m_${candleTime}`));
   const spec = SYMBOL_CANDLE_SPECS[symbol] || SYMBOL_CANDLE_SPECS.EURUSD;
   const pipValue = spec.pipValue;
 
-  // Determine total 1m candle range in pips based on market phase & pattern
+  // Rule 2 & 6: Determine 1m candle range in pips with random volatility noise
   let rangePips: number;
   if (patternType === 'ENGULFING') {
-    rangePips = spec.avgPips + Math.random() * (spec.breakoutPips - spec.avgPips);
+    rangePips = spec.avgPips + rng() * (spec.breakoutPips - spec.avgPips);
   } else if (patternType === 'INDECISION') {
-    rangePips = spec.minPips + Math.random() * (spec.avgPips - spec.minPips);
+    rangePips = spec.minPips + rng() * (spec.avgPips - spec.minPips);
   } else if (driftMultiplier > 1.3) {
-    rangePips = spec.breakoutPips * 0.8 + Math.random() * (spec.maxPips - spec.breakoutPips * 0.8);
+    rangePips = spec.breakoutPips * 0.8 + rng() * (spec.maxPips - spec.breakoutPips * 0.8);
   } else if (driftMultiplier < 0.6) {
-    rangePips = spec.minPips + Math.random() * (spec.avgPips * 0.7 - spec.minPips);
+    rangePips = spec.minPips + rng() * (spec.avgPips * 0.7 - spec.minPips);
   } else {
-    rangePips = spec.minPips * 1.2 + Math.random() * (spec.avgPips * 1.5 - spec.minPips * 1.2);
+    rangePips = spec.minPips * 1.2 + rng() * (spec.avgPips * 1.5 - spec.minPips * 1.2);
   }
 
-  // Strictly bound rangePips between minPips and maxPips
+  // Inject random noise factor (0.75x to 1.25x)
+  rangePips = rangePips * (0.75 + rng() * 0.50);
   rangePips = Math.max(spec.minPips, Math.min(spec.maxPips, rangePips));
   const rangePrice = rangePips * pipValue;
 
-  // Body and wick ratios
-  let bodyRatio = 0.55 + Math.random() * 0.20; // 55% - 75% default
-  let upperWickRatio = 0.12 + Math.random() * 0.15;
-  let lowerWickRatio = 0.12 + Math.random() * 0.15;
+  // Rule 5: Realistic Wick & Body Generation
+  let bodyRatio = 0.45 + rng() * 0.25; // 45% - 70% default
+  let upperWickRatio = 0.12 + rng() * 0.15;
+  let lowerWickRatio = 0.12 + rng() * 0.15;
 
   if (patternType === 'PIN_BAR') {
-    // Rejection pin bar / hammer / shooting star
-    bodyRatio = 0.10 + Math.random() * 0.12;
+    // Rejection pin bar / hammer / shooting star with prominent wick
+    bodyRatio = 0.12 + rng() * 0.12;
     if (candleBias > 0) {
-      lowerWickRatio = 0.65 + Math.random() * 0.12;
-      upperWickRatio = Math.max(0.02, 1.0 - bodyRatio - lowerWickRatio);
+      lowerWickRatio = 0.60 + rng() * 0.18;
+      upperWickRatio = Math.max(0.08, 1.0 - bodyRatio - lowerWickRatio);
     } else {
-      upperWickRatio = 0.65 + Math.random() * 0.12;
-      lowerWickRatio = Math.max(0.02, 1.0 - bodyRatio - upperWickRatio);
+      upperWickRatio = 0.60 + rng() * 0.18;
+      lowerWickRatio = Math.max(0.08, 1.0 - bodyRatio - upperWickRatio);
     }
   } else if (patternType === 'ENGULFING') {
-    bodyRatio = 0.72 + Math.random() * 0.16;
-    upperWickRatio = (1.0 - bodyRatio) * (0.3 + Math.random() * 0.4);
-    lowerWickRatio = 1.0 - bodyRatio - upperWickRatio;
+    bodyRatio = 0.65 + rng() * 0.20;
+    const remainingWick = Math.max(0.10, 1.0 - bodyRatio);
+    upperWickRatio = remainingWick * (0.35 + rng() * 0.30);
+    lowerWickRatio = remainingWick - upperWickRatio;
   } else if (patternType === 'INDECISION') {
-    bodyRatio = 0.02 + Math.random() * 0.08;
-    upperWickRatio = (1.0 - bodyRatio) * (0.4 + Math.random() * 0.2);
-    lowerWickRatio = 1.0 - bodyRatio - upperWickRatio;
+    bodyRatio = 0.05 + rng() * 0.10;
+    const remainingWick = 1.0 - bodyRatio;
+    upperWickRatio = remainingWick * (0.40 + rng() * 0.20);
+    lowerWickRatio = remainingWick - upperWickRatio;
   } else {
-    const sumWicks = 1.0 - bodyRatio;
-    upperWickRatio = sumWicks * (0.35 + Math.random() * 0.30);
-    lowerWickRatio = sumWicks - upperWickRatio;
+    // Normal candle with guaranteed upper and lower wicks
+    bodyRatio = 0.42 + rng() * 0.26;
+    const remainingWick = 1.0 - bodyRatio;
+    upperWickRatio = Math.max(0.10, remainingWick * (0.35 + rng() * 0.30));
+    lowerWickRatio = Math.max(0.10, remainingWick - upperWickRatio);
   }
 
   const bodyPrice = rangePrice * bodyRatio;
-  const upperWickPrice = rangePrice * upperWickRatio;
-  const lowerWickPrice = rangePrice * lowerWickRatio;
+  const upperWickPrice = Math.max(spec.pipValue * 0.2, rangePrice * upperWickRatio);
+  const lowerWickPrice = Math.max(spec.pipValue * 0.2, rangePrice * lowerWickRatio);
 
   const isBullish = candleBias > 0;
   let open = openPrice;
@@ -671,7 +679,7 @@ function simulate1mCandleViaTicks(
   high = Number(Math.max(high, open, close).toFixed(decimals));
   low = Number(Math.min(low, open, close).toFixed(decimals));
 
-  const volume = Math.round(150 + rangePips * 12 + Math.random() * 200);
+  const volume = Math.round(150 + rangePips * 12 + rng() * 200);
 
   return {
     time: candleTime,

@@ -46,8 +46,8 @@ export default function RulesCard({
   let dailyDrawdown = '5%';
   let maxDrawdown = '10%';
   if (isInstant) {
-    dailyDrawdown = size <= 3000 ? '0.5%' : '1%';
-    maxDrawdown = size <= 3000 ? '1%' : '2%';
+    dailyDrawdown = `$${(size * 0.0225).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+    maxDrawdown = `$${(size * 0.05).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
   } else if (isOneStep) {
     dailyDrawdown = '4%';
     maxDrawdown = '8%';
@@ -61,7 +61,8 @@ export default function RulesCard({
   else if (isPayoutLater) leverage = '1:50';
 
   let profitSplit = '80%';
-  if (isTrial) profitSplit = '30%';
+  if (isInstant) profitSplit = '70%';
+  else if (isTrial) profitSplit = '30%';
 
   const minHoldTime = isInstant
     ? '2 Minutes'
@@ -69,35 +70,44 @@ export default function RulesCard({
       ? 'Removed (Addon Active)' 
       : '2 Minutes';
 
+  let maxLotSizeStr = '0.20 Lots Max';
+  if (size >= 100000) maxLotSizeStr = '2.00 Lots Max';
+  else if (size >= 50000) maxLotSizeStr = '1.00 Lot Max';
+  else if (size >= 25000) maxLotSizeStr = '0.50 Lots Max';
+  else if (size <= 10000) maxLotSizeStr = '0.20 Lots Max';
+
+  const minLossStr = `$${(size * 0.0225).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+  const maxLossStr = `$${(size * 0.05).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+
   const rulesList = isInstant ? [
     { label: 'Profit Target', value: 'No Target', allowed: true },
-    { label: 'Daily Drawdown', value: dailyDrawdown, allowed: true },
-    { label: 'Maximum Drawdown', value: maxDrawdown, allowed: true },
-    { label: 'Profit Split', value: '80%', allowed: true },
+    { label: 'Minimum Loss', value: minLossStr, allowed: true },
+    { label: 'Maximum Loss', value: maxLossStr, allowed: true },
+    { label: 'Minimum Trading Days', value: 'None', allowed: true },
+    { label: 'Hold Time', value: '2 Minutes', allowed: true },
+    { label: 'Cooldown Trades', value: '10 Minutes', allowed: true },
+    { label: 'Payouts', value: 'Every 24 Hours', allowed: true },
+    { label: 'Payout Split', value: '70%', allowed: true },
     { label: 'Maximum Leverage', value: '1:30', allowed: true },
+    { label: 'Max Position Size Limit', value: maxLotSizeStr, allowed: true },
     { label: 'News Trading', value: 'Allowed', allowed: true },
     { label: 'Weekend Holding', value: 'Allowed', allowed: true },
     { label: 'Expert Advisors', value: 'Allowed', allowed: true },
-    { label: 'Hedging', value: 'Allowed', allowed: true },
     { label: 'Copy Trading', value: 'Not Allowed', allowed: false },
-    { label: 'Minimum Hold Time', value: '2 Minutes', allowed: true },
-    { label: 'Warning Trigger', value: 'After 2 Minutes', allowed: true },
-    { label: 'Maximum Hold Time', value: '10 Minutes', allowed: true },
-    { label: '10 Minute Rule Violation', value: 'Instant Account Breach', allowed: false },
   ] : [
     { label: 'Profit Target', value: profitTarget, allowed: true },
     { label: 'Daily Drawdown', value: dailyDrawdown, allowed: true },
     { label: 'Maximum Drawdown', value: maxDrawdown, allowed: true },
+    { label: 'Max Position Size Limit', value: maxLotSizeStr, allowed: true },
     { label: 'Profit Split', value: profitSplit, allowed: true },
     { label: 'Maximum Leverage', value: leverage, allowed: true },
     { label: 'News Trading', value: 'Allowed', allowed: true },
     { label: 'Weekend Holding', value: 'Allowed', allowed: true },
     { label: 'Expert Advisors', value: 'Allowed', allowed: true },
-    { label: 'Hedging', value: 'Allowed', allowed: true },
     { label: 'Copy Trading', value: 'Not Allowed', allowed: false },
     { label: 'Minimum Hold Time', value: minHoldTime, allowed: true, highlight: !isInstant && holdRuleUpgradePurchased },
-    { label: 'Cooldown After Close', value: 'None', allowed: true },
-    { label: 'Daily Payout', value: 'Bi-Weekly', allowed: true },
+    { label: 'Gambling / Scalp Protection', value: 'Enforced', allowed: true },
+    { label: 'Payout Protection', value: 'Active (<24h Approval)', allowed: true },
   ];
 
   return (

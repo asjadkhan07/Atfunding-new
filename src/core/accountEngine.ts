@@ -57,33 +57,41 @@ export function calculatePositionMargin(
 
 /**
  * Centralized Account Evaluation Engine
- * Merges account state, open positions, and current tick prices
+ * Merges account state, open positions, optional closed positions, and current tick prices
  */
 export function recalculateAccountMetrics(
   account: TradingAccount,
   openTrades: RichTrade[],
-  prices: Record<string, SymbolPrice>
+  prices: Record<string, SymbolPrice>,
+  closedTrades?: any[]
 ): AccountMetrics {
-  const balance = account.balance;
-  
+  let balance = account.balance;
+
+  // Requirement: Recalculate account balance directly from trade history: Current Balance = Initial Balance + Total Closed PnL
+  if (closedTrades && Array.isArray(closedTrades)) {
+    const startingBal = Number(account.startingBalance || account.size || 10000);
+    const closedPnL = closedTrades.reduce((sum, trade) => sum + (Number(trade.profit) || 0), 0);
+    balance = Number((startingBal + closedPnL).toFixed(2));
+  }
+
   // 1. Calculate Floating PnL
   const floatingPnL = openTrades.reduce((sum, trade) => sum + (trade.profit || 0), 0);
-  
+
   // 2. Calculate Equity
   const equity = Number((balance + floatingPnL).toFixed(2));
-  
+
   // 3. Calculate Margin Used across all open positions
   const marginUsed = openTrades.reduce((sum, trade) => {
     const livePrice = prices[trade.symbol];
     const currentPrice = livePrice ? (trade.direction === 'buy' ? livePrice.bid : livePrice.ask) : trade.entryPrice;
     return sum + calculatePositionMargin(trade.symbol, trade.volume, currentPrice, account.accountType);
   }, 0);
-  
+
   const roundedMarginUsed = Number(marginUsed.toFixed(2));
-  
+
   // 4. Calculate Free Margin
   const freeMargin = Number((equity - roundedMarginUsed).toFixed(2));
-  
+
   return {
     balance,
     floatingPnL: Number(floatingPnL.toFixed(2)),

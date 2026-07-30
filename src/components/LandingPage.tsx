@@ -463,16 +463,16 @@ export default function LandingPage({
 
                     <div className="space-y-2.5 border-t border-white/10 pt-4">
                       <div className="flex justify-between text-xs">
-                        <span className="text-slate-400">Simulated Target</span>
-                        <span className="text-white font-semibold">{pkg.profitTargetPercent > 0 ? `${pkg.profitTargetPercent}%` : 'N/A'}</span>
+                        <span className="text-slate-400">{pkg.type === 'instant_bolt' ? 'Profit Target' : 'Simulated Target'}</span>
+                        <span className="text-white font-semibold">{pkg.profitTargetPercent > 0 ? `${pkg.profitTargetPercent}%` : pkg.type === 'instant_bolt' ? 'No Target' : 'N/A'}</span>
                       </div>
                       <div className="flex justify-between text-xs">
-                        <span className="text-slate-400">Daily Drawdown</span>
-                        <span className="text-white font-semibold">{pkg.dailyDrawdownPercent}%</span>
+                        <span className="text-slate-400">{pkg.type === 'instant_bolt' ? 'Minimum Loss' : 'Daily Drawdown'}</span>
+                        <span className="text-amber-400 font-semibold">{pkg.type === 'instant_bolt' ? `$${(pkg.size * 0.0225).toLocaleString(undefined, { maximumFractionDigits: 1 })}` : `${pkg.dailyDrawdownPercent}%`}</span>
                       </div>
                       <div className="flex justify-between text-xs">
-                        <span className="text-slate-400">Max Drawdown</span>
-                        <span className="text-white font-semibold">{pkg.maxDrawdownPercent}%</span>
+                        <span className="text-slate-400">{pkg.type === 'instant_bolt' ? 'Maximum Loss' : 'Max Drawdown'}</span>
+                        <span className="text-red-400 font-semibold">{pkg.type === 'instant_bolt' ? `$${(pkg.size * 0.05).toLocaleString(undefined, { maximumFractionDigits: 1 })}` : `${pkg.maxDrawdownPercent}%`}</span>
                       </div>
                       <div className="flex justify-between text-xs">
                         <span className="text-slate-400">Profit Split</span>
@@ -609,7 +609,7 @@ export default function LandingPage({
                   <span>Important Guidelines</span>
                 </h3>
                 <div className="text-sm text-slate-400 space-y-3 whitespace-pre-line leading-relaxed font-sans">
-                  {rules.customRules || "- No consistency constraints.\n- Expert advisors are fully supported.\n- News and weekend holdings allowed."}
+                  {rules.customRules || "- Expert advisors are fully supported.\n- News and weekend holdings allowed.\n- Scalp protection & risk controls active."}
                 </div>
               </div>
             </div>
@@ -1015,7 +1015,7 @@ export default function LandingPage({
                       'Risk Disclosure Statement';
 
         const defaultContent = activePolicyModal === 'terms_of_service' ? 
-          `Welcome to ATFunding. By accessing our platform and purchasing any Evaluation Challenge, you agree to comply with our Terms of Service. ATFunding provides simulated, demo-account trading evaluations designed to identify disciplined, consistent traders.\n\n1. Simulated Environment: All accounts, balances, and trades are entirely virtual. No real capital is traded.\n\n2. Prohibited Strategies: Copy-trading from external third-party signals, high-frequency arbitrage, martingale grids exceeding safety parameters, or exploiting system bugs is strictly prohibited.\n\n3. Consistency Rule: Traders must maintain steady volume allocation and consistency in trading style to qualify for funded profit-splits.` :
+          `Welcome to ATFunding. By accessing our platform and purchasing any Evaluation Challenge, you agree to comply with our Terms of Service. ATFunding provides simulated, demo-account trading evaluations designed to identify disciplined traders.\n\n1. Simulated Environment: All accounts, balances, and trades are entirely virtual. No real capital is traded.\n\n2. Prohibited Strategies: Copy-trading from external third-party signals, high-frequency arbitrage, martingale grids exceeding safety parameters, or exploiting system bugs is strictly prohibited.\n\n3. Account Rules: Traders must comply with daily drawdown and loss limits to qualify for funded profit-splits.` :
           activePolicyModal === 'privacy_policy' ? 
           `At ATFunding, your privacy is our top priority.\n\n1. Collection: We collect essential account registration details (email, full name, phone number, location, and IP logs).\n\n2. Security: All sensitive KYC documents uploaded for verification are securely encrypted and stored with Firebase Authentication.\n\n3. Sharing: We do not sell or lease your personal information to third parties. Data is only shared to comply with security audits or regulatory standards.` :
           activePolicyModal === 'refund_policy' ? 

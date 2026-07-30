@@ -223,12 +223,12 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$2K ATF Instant',
     size: 2000,
     price: 99,
-    dailyDrawdownPercent: 0.5,
-    maxDrawdownPercent: 1,
+    dailyDrawdownPercent: 2.25,
+    maxDrawdownPercent: 5,
     profitTargetPercent: 0, // No target, immediate funding payout eligibility
     leverage: '1:30',
     minimumDays: 0,
-    payoutSplit: 80,
+    payoutSplit: 70,
   },
   {
     id: 'instant_bolt_3k',
@@ -236,12 +236,12 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$3K ATF Instant',
     size: 3000,
     price: 189,
-    dailyDrawdownPercent: 0.5,
-    maxDrawdownPercent: 1,
+    dailyDrawdownPercent: 2.25,
+    maxDrawdownPercent: 5,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
-    payoutSplit: 80,
+    payoutSplit: 70,
   },
   {
     id: 'instant_bolt_6k',
@@ -249,12 +249,12 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$6K ATF Instant',
     size: 6000,
     price: 349,
-    dailyDrawdownPercent: 1,
-    maxDrawdownPercent: 2,
+    dailyDrawdownPercent: 2.25,
+    maxDrawdownPercent: 5,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
-    payoutSplit: 80,
+    payoutSplit: 70,
   },
   {
     id: 'instant_bolt_9k',
@@ -262,12 +262,12 @@ export const CHALLENGE_PACKAGES: ChallengePackage[] = [
     name: '$9K ATF Instant',
     size: 9000,
     price: 499,
-    dailyDrawdownPercent: 1,
-    maxDrawdownPercent: 2,
+    dailyDrawdownPercent: 2.25,
+    maxDrawdownPercent: 5,
     profitTargetPercent: 0,
     leverage: '1:30',
     minimumDays: 0,
-    payoutSplit: 80,
+    payoutSplit: 70,
   },
 
   // AT TRIAL ACCOUNT
@@ -315,17 +315,10 @@ export const MOCK_TRADING_SYMBOLS = [
 
 export function getAccountDrawdownLimits(accountType: string, size: number) {
   if (accountType === 'instant_bolt') {
-    if (size <= 3000) {
-      return {
-        dailyDrawdownLimit: size * 0.005, // 0.5%
-        maxDrawdownLimit: size * 0.01     // 1%
-      };
-    } else {
-      return {
-        dailyDrawdownLimit: size * 0.01,  // 1%
-        maxDrawdownLimit: size * 0.02     // 2%
-      };
-    }
+    return {
+      dailyDrawdownLimit: size * 0.0225, // Minimum Loss ($45 for 2K, $67.5 for 3K, $135 for 6K, $202.5 for 9K)
+      maxDrawdownLimit: size * 0.05      // Maximum Loss ($100 for 2K, $150 for 3K, $300 for 6K, $450 for 9K)
+    };
   } else if (accountType === 'two_step') {
     return {
       dailyDrawdownLimit: size * 0.05,

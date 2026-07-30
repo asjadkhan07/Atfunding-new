@@ -14,6 +14,8 @@ import { firebaseTelemetry } from '../firebaseTelemetry';
 import { updatePassword } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
 import EmailCenter from './EmailCenter';
+import AdminCertificateManager from './AdminCertificateManager';
+import LeaderboardView from './LeaderboardView';
 import { getCandleEngineMetrics } from '../core/candleEngine';
 import LuxuryCertificate, { DEFAULT_CERT_TEMPLATE } from './LuxuryCertificate';
 import { processAffiliateCommission } from '../utils/affiliateUtils';
@@ -21,9 +23,10 @@ import { subscribeToPrices, SymbolPrice, DECIMAL_PLACES } from '../core/priceEng
 import { getSpikeConfig, setSpikeConfig, resetSpikeConfig, subscribeToMarketEvents, MarketEventLog, SpikeConfig } from '../core/spikeEngine';
 import { calculateTradePnL } from '../core/pnlEngine';
 import { executeClosePosition } from '../core/positionEngine';
+import { auditAccount, calculateDynamicAccountMetrics, calculateAccountRiskScore, detectGamblingBehavior, getMaxLotSize, getProfitableTradingDays, AuditReportItem } from '../core/riskEngine';
 
 export default function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control' | 'certificates' | 'leaderboard'>('stats');
 
   // Active Accounts Management States
   const [accountSearchQuery, setAccountSearchQuery] = useState('');
@@ -42,6 +45,68 @@ export default function AdminPanel() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Audit System States
+  const [showAuditModal, setShowAuditModal] = useState(false);
+  const [auditFilter, setAuditFilter] = useState<'all' | 'errors' | 'gambling'>('errors');
+  const [isRepairingAll, setIsRepairingAll] = useState(false);
+  const [auditNoticeMsg, setAuditNoticeMsg] = useState('');
+
+  // Computes audit reports across all active accounts directly from trade history
+  const runSystemAudit = (): AuditReportItem[] => {
+    return accounts.map((acc) => auditAccount(acc, trades, []));
+  };
+
+  const auditReports = runSystemAudit();
+  const accountsWithErrors = auditReports.filter((r) => r.isBalanceMismatch || r.isEquityMismatch || r.isStatusMismatch);
+  const accountsWithGamblingFlags = auditReports.filter((r) => r.gamblingFlags.length > 0);
+
+  // Auto Repair Single Account
+  const handleRepairSingleAccount = async (reportItem: AuditReportItem) => {
+    try {
+      await updateDoc(doc(db, 'accounts', reportItem.accountId), {
+        balance: reportItem.expectedBalance,
+        equity: reportItem.expectedEquity,
+        status: reportItem.expectedStatus,
+        updatedAt: new Date().toISOString()
+      });
+      setAuditNoticeMsg(`Successfully repaired Account #${reportItem.login}: Balance set to $${reportItem.expectedBalance.toLocaleString()}, Status: ${reportItem.expectedStatus}`);
+    } catch (err: any) {
+      alert(`Error repairing Account #${reportItem.login}: ` + err.message);
+    }
+  };
+
+  // Auto Repair All Mismatches
+  const handleAutoRepairAll = async () => {
+    if (accountsWithErrors.length === 0) {
+      alert("No account balance or status mismatches detected. System is 100% healthy!");
+      return;
+    }
+
+    const confirmRepair = window.confirm(`Auto-repair ${accountsWithErrors.length} accounts with balance/equity/status mismatches? This will update Firestore to calculated true values.`);
+    if (!confirmRepair) return;
+
+    setIsRepairingAll(true);
+    setAuditNoticeMsg("Repairing accounts...");
+    let repairedCount = 0;
+
+    try {
+      for (const item of accountsWithErrors) {
+        await updateDoc(doc(db, 'accounts', item.accountId), {
+          balance: item.expectedBalance,
+          equity: item.expectedEquity,
+          status: item.expectedStatus,
+          updatedAt: new Date().toISOString()
+        });
+        repairedCount++;
+      }
+      setAuditNoticeMsg(`🎉 System Repair Complete! ${repairedCount} account(s) updated to true trade history values.`);
+    } catch (err: any) {
+      alert("Error during batch repair: " + err.message);
+    } finally {
+      setIsRepairingAll(false);
+    }
+  };
 
   // Market Spike Control States
   const [spikeEnabled, setSpikeEnabled] = useState<boolean>(false);
@@ -237,12 +302,17 @@ export default function AdminPanel() {
 
   // Giveaway Center states
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [giveawayUserSearch, setGiveawayUserSearch] = useState('');
+  const [propAccountSearch, setPropAccountSearch] = useState('');
   const [giveawayType, setGiveawayType] = useState<AccountType>('one_step');
   const [giveawaySize, setGiveawaySize] = useState<number>(5000);
 
   // Coupon form states
   const [newCouponCode, setNewCouponCode] = useState('');
-  const [newCouponPercent, setNewCouponPercent] = useState<number>(10);
+  const [newCouponType, setNewCouponType] = useState<'percent' | 'fixed'>('percent');
+  const [newCouponValue, setNewCouponValue] = useState<number>(10);
+  const [newCouponExpiresAt, setNewCouponExpiresAt] = useState<string>('');
+  const [newCouponMaxUses, setNewCouponMaxUses] = useState<string>('');
   const [newCouponAccountTypes, setNewCouponAccountTypes] = useState<string[]>(['one_step', 'two_step', 'payout_later', 'instant_bolt', 'trial']);
   const [editingCoupon, setEditingCoupon] = useState<Coupon | null>(null);
 
@@ -884,6 +954,26 @@ export default function AdminPanel() {
       setRuleFeeStructure(activeRule.feeStructure || '');
       setRulePayoutInterval(activeRule.payoutInterval || '');
       setRuleCustomRules(activeRule.customRules || '');
+    } else if (selectedRuleDocId === 'instant_bolt') {
+      setRulePhases('Funded Account (Direct)');
+      setRuleProfitTarget('No Target');
+      setRuleDailyDrawdown('Minimum Loss: $45 - $202.5 (2.25%)');
+      setRuleMaxDrawdown('Maximum Loss: $100 - $450 (5%)');
+      setRuleMinDays('None');
+      setRuleLeverage('1:30');
+      setRuleFeeStructure('Standard Instant Fee');
+      setRulePayoutInterval('Every 24 Hours');
+      setRuleCustomRules('- Profit Target: None\n- Minimum Loss: $45 (2K), $67.5 (3K), $135 (6K), $202.5 (9K)\n- Maximum Loss: $100 (2K), $150 (3K), $300 (6K), $450 (9K)\n- Minimum Trading Days: None\n- Minimum Hold Time: 2 Minutes\n- Cooldown Trades: 10 Minutes\n- Payouts: Every 24 Hours\n- Payout Split: 70%');
+    } else {
+      setRulePhases('');
+      setRuleProfitTarget('');
+      setRuleDailyDrawdown('');
+      setRuleMaxDrawdown('');
+      setRuleMinDays('');
+      setRuleLeverage('');
+      setRuleFeeStructure('');
+      setRulePayoutInterval('');
+      setRuleCustomRules('');
     }
   }, [selectedRuleDocId, challengeRulesList]);
 
@@ -1491,16 +1581,34 @@ export default function AdminPanel() {
     const isAllSelected = newCouponAccountTypes.length === 5 || newCouponAccountTypes.length === 0;
     const finalTypes = isAllSelected ? ['all'] : newCouponAccountTypes;
 
+    const isFixed = newCouponType === 'fixed';
+    const val = Number(newCouponValue) || 0;
+
     try {
-      await setDoc(doc(db, 'coupons', codeUpper), {
+      const docData: any = {
         code: codeUpper,
-        discountPercent: Number(newCouponPercent),
+        discountType: newCouponType,
+        discountPercent: isFixed ? 0 : val,
+        discountAmount: isFixed ? val : 0,
         active: true,
         applicableAccountTypes: finalTypes,
-        createdBy: 'admin'
-      });
+        createdBy: 'admin',
+        usedCount: 0
+      };
+
+      if (newCouponExpiresAt.trim()) {
+        docData.expiresAt = newCouponExpiresAt.trim();
+      }
+      if (newCouponMaxUses && Number(newCouponMaxUses) > 0) {
+        docData.maxUses = Number(newCouponMaxUses);
+      }
+
+      await setDoc(doc(db, 'coupons', codeUpper), docData);
       setNewCouponCode('');
-      setNewCouponPercent(10);
+      setNewCouponValue(10);
+      setNewCouponType('percent');
+      setNewCouponExpiresAt('');
+      setNewCouponMaxUses('');
       setNewCouponAccountTypes(['one_step', 'two_step', 'payout_later', 'instant_bolt', 'trial']);
       fetchAllData();
     } catch (e) {
@@ -2354,8 +2462,8 @@ export default function AdminPanel() {
         </div>
       )}
 
-      {/* Admin NavTabs */}
-      <div className="flex bg-white/5 border border-white/10 rounded-full p-1 max-w-5xl overflow-x-auto scrollbar-none">
+      {/* Admin NavTabs - Horizontal Scroll Container */}
+      <div className="w-full bg-slate-900/80 border border-white/10 rounded-2xl p-2 overflow-x-auto overflow-y-hidden scrollbar-thin scrollbar-thumb-white/20 whitespace-nowrap shadow-2xl backdrop-blur-md flex items-center space-x-2">
         {[
           { id: 'stats', label: 'Dashboard', icon: Layers },
           { id: 'market_control', label: 'Market Control', icon: Sliders },
@@ -2364,7 +2472,8 @@ export default function AdminPanel() {
           { id: 'active_accounts', label: 'Active Accounts', icon: Shield },
           { id: 'accounts', label: 'Giveaways & Provisioning', icon: Gift },
           { id: 'orders', label: 'Payments', icon: Coins },
-          { id: 'certificates', label: 'Certificate Manager', icon: Award },
+          { id: 'certificates', label: '📜 Certificate Manager', icon: Award },
+          { id: 'leaderboard', label: '🏆 Leaderboard', icon: Award },
           { id: 'challenge_reviews', label: 'Challenge Reviews', icon: Award },
           { id: 'referral_withdrawals', label: 'Referral Withdrawals', icon: DollarSign },
           { id: 'payouts', label: 'Payout Requests', icon: DollarSign },
@@ -2387,8 +2496,10 @@ export default function AdminPanel() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id as any)}
-            className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap flex items-center space-x-1.5 transition-colors ${
-              activeTab === tab.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/15' : 'text-slate-400 hover:text-white'
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center space-x-2 transition-all cursor-pointer ${
+              activeTab === tab.id 
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 font-bold border border-blue-400/30' 
+                : 'text-slate-400 hover:text-white hover:bg-white/5 border border-transparent'
             }`}
           >
             <tab.icon className="w-3.5 h-3.5" />
@@ -3087,57 +3198,27 @@ export default function AdminPanel() {
 
           {/* TAB: CERTIFICATE MANAGER */}
           {activeTab === 'certificates' && (
-            <div className="space-y-6 animate-fade-in">
-              {/* Top Certificate Mode Sub-Navigation Bar */}
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white/5 border border-white/10 rounded-3xl p-4 backdrop-blur-sm shadow-xl">
-                <div>
-                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                    <Award className="w-5 h-5 text-amber-400" />
-                    <span>Certificate Hub & Customizer</span>
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Design custom templates, issue awards, download PDFs, and send via email.</p>
-                </div>
+            <AdminCertificateManager 
+              users={users} 
+              accounts={accounts} 
+              certificates={certificates} 
+            />
+          )}
 
-                <div className="flex items-center p-1 bg-black/40 border border-white/10 rounded-2xl">
-                  <button
-                    type="button"
-                    onClick={() => setActiveCertSubTab('issued')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                      activeCertSubTab === 'issued'
-                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <Award className="w-4 h-4" />
-                    <span>Issued Certificates ({certificates.length})</span>
-                  </button>
+          {/* TAB: DYNAMIC LEADERBOARD */}
+          {activeTab === 'leaderboard' && (
+            <LeaderboardView 
+              isAdmin={true} 
+              accountsList={accounts} 
+              usersList={users} 
+              payoutsList={payouts} 
+            />
+          )}
 
-                  <button
-                    type="button"
-                    onClick={() => setActiveCertSubTab('editor')}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                      activeCertSubTab === 'editor'
-                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <Sliders className="w-4 h-4" />
-                    <span>Certificate Template Editor</span>
-                  </button>
-                </div>
-              </div>
 
-              {certMsg && (
-                <div className={`p-4 rounded-2xl text-xs font-bold shadow-lg flex items-center justify-between ${
-                  certMsg.startsWith('Success') ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/10 text-red-400 border border-red-500/30'
-                }`}>
-                  <span>{certMsg}</span>
-                  <button type="button" onClick={() => setCertMsg('')} className="text-slate-400 hover:text-white">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
+          {/* LEGACY INLINE CERTIFICATES (DISABLED IN FAVOR OF AdminCertificateManager) */}
+          {false && (
+            <div>
               {/* MODE 1: ISSUED CERTIFICATES & ISSUANCE FORM */}
               {activeCertSubTab === 'issued' && (
                 <>
@@ -5269,6 +5350,62 @@ export default function AdminPanel() {
                 </div>
               </div>
 
+              {/* AUDIT & INTEGRITY CONTROL BANNER */}
+              <div className="bg-gradient-to-r from-blue-950/80 via-slate-900 to-indigo-950/80 border border-blue-500/30 rounded-3xl p-5 shadow-2xl space-y-3">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 rounded-2xl bg-blue-500/20 border border-blue-500/40 text-blue-400">
+                      <Shield className="w-6 h-6 animate-pulse" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-extrabold text-white uppercase tracking-wider">SYSTEM AUDIT & INTEGRITY REPAIR</h4>
+                        {accountsWithErrors.length > 0 ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                            {accountsWithErrors.length} DISCREPANCIES DETECTED
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            SYSTEM 100% HEALTHY
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5 font-mono">
+                        Recalculates all account balances, equity, daily loss, and max drawdown directly from trade history.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full md:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => setShowAuditModal(true)}
+                      className="px-4 py-2 bg-blue-600/30 hover:bg-blue-600 border border-blue-500/40 text-blue-200 hover:text-white rounded-xl text-xs font-bold uppercase transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-blue-600/10"
+                    >
+                      <Activity className="w-4 h-4 text-blue-400" />
+                      <span>View Audit Details ({auditReports.length})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isRepairingAll || accountsWithErrors.length === 0}
+                      onClick={handleAutoRepairAll}
+                      className="px-4 py-2 bg-emerald-600/30 hover:bg-emerald-500 disabled:opacity-50 border border-emerald-500/40 text-emerald-200 hover:text-slate-950 rounded-xl text-xs font-bold uppercase transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-600/20"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${isRepairingAll ? 'animate-spin' : ''}`} />
+                      <span>{isRepairingAll ? 'Repairing...' : `Auto Repair All (${accountsWithErrors.length})`}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {auditNoticeMsg && (
+                  <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-xl text-xs font-mono text-blue-300 flex items-center justify-between animate-fade-in">
+                    <span>{auditNoticeMsg}</span>
+                    <button onClick={() => setAuditNoticeMsg('')} className="text-slate-400 hover:text-white">✕</button>
+                  </div>
+                )}
+              </div>
+
               {/* Main Panel */}
               <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-5">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/10 pb-5">
@@ -5332,8 +5469,9 @@ export default function AdminPanel() {
                         <th className="py-3 px-2">Trader Email</th>
                         <th className="py-3 px-2">Type / Phase</th>
                         <th className="py-3 px-2">Size</th>
-                        <th className="py-3 px-2">Balance</th>
+                        <th className="py-3 px-2">Balance (Calculated vs Stored)</th>
                         <th className="py-3 px-2">Equity</th>
+                        <th className="py-3 px-2">Risk Level</th>
                         <th className="py-3 px-2">Status</th>
                         <th className="py-3 px-2 text-right">Actions</th>
                       </tr>
@@ -5360,6 +5498,7 @@ export default function AdminPanel() {
                         .map(acc => {
                           const startBal = acc.startingBalance || acc.size || 5000;
                           const pnl = (acc.equity || acc.balance) - startBal;
+                          const auditRes = auditAccount(acc, trades, []);
 
                           return (
                             <tr key={acc.id} className="hover:bg-white/[0.02] transition-colors">
@@ -5380,12 +5519,32 @@ export default function AdminPanel() {
                               <td className="py-3 px-2 font-mono text-slate-300">
                                 ${startBal.toLocaleString()}
                               </td>
-                              <td className="py-3 px-2 font-mono text-white font-bold">
-                                ${acc.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              <td className="py-3 px-2 font-mono">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-white font-bold block">
+                                    ${auditRes.expectedBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                  {auditRes.isBalanceMismatch ? (
+                                    <span className="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/30 text-rose-300 text-[9px] font-bold" title={`Stored: $${acc.balance.toFixed(2)}`}>
+                                      Mismatch! (Stored $${acc.balance.toFixed(0)})
+                                    </span>
+                                  ) : (
+                                    <span className="text-emerald-400 text-xs" title="Verified matches trade history">✓</span>
+                                  )}
+                                </div>
                               </td>
                               <td className="py-3 px-2 font-mono font-bold">
                                 <span className={pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                                   ${acc.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 font-mono text-[9px]">
+                                <span className={`px-1.5 py-0.5 rounded font-bold ${
+                                  auditRes.riskLevel === 'LOW' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                  auditRes.riskLevel === 'MEDIUM' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                  'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                }`}>
+                                  Risk: {auditRes.riskScore}% ({auditRes.riskLevel})
                                 </span>
                               </td>
                               <td className="py-3 px-2">
@@ -5399,6 +5558,18 @@ export default function AdminPanel() {
                               </td>
                               <td className="py-3 px-2 text-right">
                                 <div className="flex items-center justify-end gap-1.5">
+                                  {/* Quick Repair Button if discrepancy exists */}
+                                  {(auditRes.isBalanceMismatch || auditRes.isEquityMismatch || auditRes.isStatusMismatch) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRepairSingleAccount(auditRes)}
+                                      title="Auto repair account balance/equity/status to match calculated trade history"
+                                      className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black rounded-lg text-[10px] uppercase transition-all shadow-md shadow-emerald-500/20"
+                                    >
+                                      Repair
+                                    </button>
+                                  )}
+
                                   {/* Edit Balance & Equity Button */}
                                   <button
                                     type="button"
@@ -5505,6 +5676,170 @@ export default function AdminPanel() {
                   </table>
                 </div>
               </div>
+
+              {/* Full Audit System Modal */}
+              {showAuditModal && (
+                <div className="fixed inset-0 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-[#0b0f19] border border-blue-500/30 rounded-3xl p-6 max-w-5xl w-full max-h-[90vh] flex flex-col space-y-4 shadow-2xl overflow-hidden">
+                    {/* Header */}
+                    <div className="flex justify-between items-center border-b border-white/10 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Shield className="w-5 h-5 text-blue-400" />
+                          <h3 className="text-base font-extrabold text-white uppercase tracking-wider">
+                            CRITICAL SYSTEM AUDIT & RISK REPORT
+                          </h3>
+                        </div>
+                        <p className="text-xs text-slate-400 font-mono mt-0.5">
+                          Calculated from trade history. Formula: Balance = Initial + Closed PnL | Equity = Balance + Floating PnL
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={isRepairingAll || accountsWithErrors.length === 0}
+                          onClick={handleAutoRepairAll}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black rounded-xl text-xs uppercase transition-all"
+                        >
+                          Auto Repair All ({accountsWithErrors.length})
+                        </button>
+                        <button
+                          onClick={() => setShowAuditModal(false)}
+                          className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Stat Badges */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono text-xs">
+                      <div className="p-3 rounded-2xl bg-black/40 border border-white/10">
+                        <span className="text-slate-400 text-[10px] uppercase block">Total Accounts</span>
+                        <span className="text-lg font-bold text-white">{auditReports.length}</span>
+                      </div>
+                      <div className={`p-3 rounded-2xl border ${accountsWithErrors.length > 0 ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-black/40 border-white/10 text-emerald-400'}`}>
+                        <span className="text-[10px] uppercase block">Balance/Status Discrepancies</span>
+                        <span className="text-lg font-bold">{accountsWithErrors.length}</span>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-black/40 border border-white/10">
+                        <span className="text-slate-400 text-[10px] uppercase block">Gambling Flags</span>
+                        <span className="text-lg font-bold text-indigo-400">{accountsWithGamblingFlags.length}</span>
+                      </div>
+                    </div>
+
+                    {/* Filter Tabs */}
+                    <div className="flex items-center gap-2 border-b border-white/10 pb-2 text-xs font-mono">
+                      <button
+                        onClick={() => setAuditFilter('errors')}
+                        className={`px-3 py-1.5 rounded-xl font-bold uppercase transition-all ${
+                          auditFilter === 'errors' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Discrepancies ({accountsWithErrors.length})
+                      </button>
+                      <button
+                        onClick={() => setAuditFilter('gambling')}
+                        className={`px-3 py-1.5 rounded-xl font-bold uppercase transition-all ${
+                          auditFilter === 'gambling' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Gambling Flags ({accountsWithGamblingFlags.length})
+                      </button>
+                      <button
+                        onClick={() => setAuditFilter('all')}
+                        className={`px-3 py-1.5 rounded-xl font-bold uppercase transition-all ${
+                          auditFilter === 'all' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        All Accounts ({auditReports.length})
+                      </button>
+                    </div>
+
+                    {/* Report List */}
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-xs">
+                      {auditReports
+                        .filter((r) => {
+                          if (auditFilter === 'errors') return r.isBalanceMismatch || r.isEquityMismatch || r.isStatusMismatch;
+                          if (auditFilter === 'gambling') return r.gamblingFlags.length > 0;
+                          return true;
+                        })
+                        .map((r) => (
+                          <div
+                            key={r.accountId}
+                            className={`p-4 rounded-2xl border transition-all ${
+                              r.isBalanceMismatch || r.isEquityMismatch || r.isStatusMismatch
+                                ? 'bg-rose-950/20 border-rose-500/30'
+                                : 'bg-black/30 border-white/5'
+                            }`}
+                          >
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-white/5 pb-2">
+                              <div>
+                                <span className="text-white font-bold font-mono text-sm">Account #{r.login || r.accountId}</span>
+                                <span className="text-slate-400 font-mono text-xs ml-2">({r.userEmail})</span>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase ${
+                                  r.storedStatus === 'active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                }`}>
+                                  Stored Status: {r.storedStatus}
+                                </span>
+
+                                {(r.isBalanceMismatch || r.isEquityMismatch || r.isStatusMismatch) && (
+                                  <button
+                                    onClick={() => handleRepairSingleAccount(r)}
+                                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black rounded-lg text-[10px] uppercase transition-all"
+                                  >
+                                    Repair Account
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3 font-mono text-xs">
+                              <div>
+                                <span className="text-slate-500 text-[10px] uppercase block">Starting Size</span>
+                                <span className="text-white font-bold">${r.startingBalance.toLocaleString()}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500 text-[10px] uppercase block">Calculated Balance</span>
+                                <span className="text-emerald-400 font-bold">${r.expectedBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                {r.isBalanceMismatch && <span className="text-rose-400 text-[9px] block">Stored: ${r.currentStoredBalance.toLocaleString()}</span>}
+                              </div>
+                              <div>
+                                <span className="text-slate-500 text-[10px] uppercase block">Risk Score</span>
+                                <span className="text-amber-400 font-bold">{r.riskScore}% ({r.riskLevel})</span>
+                              </div>
+                            </div>
+
+                            {/* Warnings & Flags */}
+                            {(r.errorsFound.length > 0 || r.gamblingFlags.length > 0 || !r.canRequestPayout) && (
+                              <div className="mt-3 p-2 bg-black/40 border border-white/5 rounded-xl space-y-1 text-[11px] font-mono">
+                                {r.errorsFound.map((d, i) => (
+                                  <p key={i} className="text-rose-300 flex items-center gap-1">
+                                    <span>🚫</span> <span>{d}</span>
+                                  </p>
+                                ))}
+                                {r.gamblingFlags.map((g, i) => (
+                                  <p key={i} className="text-amber-300 flex items-center gap-1">
+                                    <span>⚠️ Gambling Flag:</span> <span>{g}</span>
+                                  </p>
+                                ))}
+                                {!r.canRequestPayout && (
+                                  <p className="text-indigo-300 flex items-center gap-1">
+                                    <span>🔒 Payout Protection:</span> <span>{r.payoutBlockedReason}</span>
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Edit Balance Modal */}
               {editingAccountBalanceModal && (
@@ -5742,10 +6077,20 @@ export default function AdminPanel() {
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={() => setSelectedUserIds(users.filter(u => u.role !== 'admin').map(u => u.uid))}
+                          onClick={() => {
+                            const nonAdminTraders = users.filter(u => u.role !== 'admin');
+                            const filtered = nonAdminTraders.filter(u => {
+                              if (!giveawayUserSearch.trim()) return true;
+                              const q = giveawayUserSearch.toLowerCase().trim();
+                              return (u.email || '').toLowerCase().includes(q) || 
+                                     (u.displayName || u.name || '').toLowerCase().includes(q) || 
+                                     (u.uid || '').toLowerCase().includes(q);
+                            });
+                            setSelectedUserIds(Array.from(new Set([...selectedUserIds, ...filtered.map(u => u.uid)])));
+                          }}
                           className="text-[9px] text-blue-400 hover:underline font-bold"
                         >
-                          Select All
+                          Select {giveawayUserSearch.trim() ? 'Filtered' : 'All'}
                         </button>
                         <span className="text-slate-600">|</span>
                         <button
@@ -5758,32 +6103,73 @@ export default function AdminPanel() {
                       </div>
                     </div>
 
-                    <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
-                      {users.filter(u => u.role !== 'admin').map(u => {
-                        const isChecked = selectedUserIds.includes(u.uid);
-                        return (
-                          <label key={u.uid} className="flex items-center space-x-2.5 p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {
-                                if (isChecked) {
-                                  setSelectedUserIds(selectedUserIds.filter(id => id !== u.uid));
-                                } else {
-                                  setSelectedUserIds([...selectedUserIds, u.uid]);
-                                }
-                              }}
-                              className="rounded border-white/20 bg-black/40 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-                            />
-                            <div className="text-[11px]">
-                              <span className="text-white block font-semibold leading-none">{u.email}</span>
-                              <span className="text-slate-500 text-[9px] leading-tight mt-0.5 block">{u.displayName || u.name || 'Anonymous'}</span>
-                            </div>
-                          </label>
-                        );
-                      })}
-                      {users.filter(u => u.role !== 'admin').length === 0 && (
-                        <p className="text-slate-500 text-center py-6 text-xs">No registered traders found.</p>
+                    {/* Search Input for Traders */}
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Search trader by email, name, or UID..."
+                        value={giveawayUserSearch}
+                        onChange={(e) => setGiveawayUserSearch(e.target.value)}
+                        className="w-full h-8 pl-8 pr-7 bg-black/40 border border-blue-500/30 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-400 font-medium"
+                      />
+                      {giveawayUserSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setGiveawayUserSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs font-bold"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="max-h-56 overflow-y-auto space-y-1 pr-1">
+                      {users
+                        .filter(u => u.role !== 'admin')
+                        .filter(u => {
+                          if (!giveawayUserSearch.trim()) return true;
+                          const q = giveawayUserSearch.toLowerCase().trim();
+                          const email = (u.email || '').toLowerCase();
+                          const name = (u.displayName || u.name || '').toLowerCase();
+                          const uid = (u.uid || '').toLowerCase();
+                          return email.includes(q) || name.includes(q) || uid.includes(q);
+                        })
+                        .map(u => {
+                          const isChecked = selectedUserIds.includes(u.uid);
+                          return (
+                            <label key={u.uid} className="flex items-center space-x-2.5 p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border border-transparent hover:border-white/5">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  if (isChecked) {
+                                    setSelectedUserIds(selectedUserIds.filter(id => id !== u.uid));
+                                  } else {
+                                    setSelectedUserIds([...selectedUserIds, u.uid]);
+                                  }
+                                }}
+                                className="rounded border-white/20 bg-black/40 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                              />
+                              <div className="text-[11px] truncate">
+                                <span className="text-white block font-semibold leading-none truncate">{u.email}</span>
+                                <span className="text-slate-400 text-[9px] leading-tight mt-0.5 block truncate">{u.displayName || u.name || 'Anonymous'} ({u.uid})</span>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      {users
+                        .filter(u => u.role !== 'admin')
+                        .filter(u => {
+                          if (!giveawayUserSearch.trim()) return true;
+                          const q = giveawayUserSearch.toLowerCase().trim();
+                          return (u.email || '').toLowerCase().includes(q) || 
+                                 (u.displayName || u.name || '').toLowerCase().includes(q) || 
+                                 (u.uid || '').toLowerCase().includes(q);
+                        }).length === 0 && (
+                        <p className="text-slate-500 text-center py-6 text-xs">
+                          {giveawayUserSearch ? `No traders found matching "${giveawayUserSearch}"` : 'No registered traders found.'}
+                        </p>
                       )}
                     </div>
                   </div>
@@ -5843,7 +6229,7 @@ export default function AdminPanel() {
                     <div className="pt-2 space-y-2">
                       <button
                         onClick={handleProvisionGiveaway}
-                        className="w-full h-11 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-full text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-lg shadow-amber-600/10"
+                        className="w-full h-11 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-full text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-lg shadow-amber-600/10 cursor-pointer"
                       >
                         <Gift className="w-4 h-4" />
                         <span>Instantly Provision Funded Giveaway</span>
@@ -5903,7 +6289,7 @@ export default function AdminPanel() {
                             setManualAccountMsg("Evaluation challenge provisioning failed.");
                           }
                         }}
-                        className="w-full h-11 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-full text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-lg shadow-blue-600/10"
+                        className="w-full h-11 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-full text-xs flex items-center justify-center space-x-1.5 transition-colors shadow-lg shadow-blue-600/10 cursor-pointer"
                       >
                         <Award className="w-4 h-4" />
                         <span>Instantly Provision Evaluation (Phase 1)</span>
@@ -5913,14 +6299,45 @@ export default function AdminPanel() {
                 </div>
               </div>
 
-              {/* Right Column: Active Prop Accounts List */}
+              {/* Right Column: Active Prop Accounts List with Search */}
               <div className="lg:col-span-4 bg-white/5 border border-white/10 rounded-3xl p-6 space-y-4 backdrop-blur-sm shadow-xl">
                 <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center justify-between">
                   <span>All Prop Accounts ({accounts.length})</span>
                   <span className="text-[10px] text-slate-500 font-mono">Live Sync</span>
                 </h3>
-                <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
-                  {accounts.map(acc => (
+
+                {/* Account Search Input */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Search account ID, email, status..."
+                    value={propAccountSearch}
+                    onChange={(e) => setPropAccountSearch(e.target.value)}
+                    className="w-full h-8 pl-8 pr-7 bg-black/40 border border-blue-500/30 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-400 font-medium"
+                  />
+                  {propAccountSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setPropAccountSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs font-bold"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+                  {accounts
+                    .filter(acc => {
+                      if (!propAccountSearch.trim()) return true;
+                      const q = propAccountSearch.toLowerCase().trim();
+                      return (acc.id || '').toLowerCase().includes(q) ||
+                             (acc.userEmail || '').toLowerCase().includes(q) ||
+                             (acc.status || '').toLowerCase().includes(q) ||
+                             (acc.accountType || '').toLowerCase().includes(q);
+                    })
+                    .map(acc => (
                     <div key={acc.id} className="p-3 bg-white/5 border border-white/10 rounded-2xl text-xs flex justify-between items-center hover:border-white/20 transition-colors">
                       <div>
                         <div className="flex items-center space-x-1.5">
@@ -5943,8 +6360,18 @@ export default function AdminPanel() {
                       </div>
                     </div>
                   ))}
-                  {accounts.length === 0 && (
-                    <p className="text-slate-500 text-center py-12 text-xs">No active prop accounts found.</p>
+                  {accounts
+                    .filter(acc => {
+                      if (!propAccountSearch.trim()) return true;
+                      const q = propAccountSearch.toLowerCase().trim();
+                      return (acc.id || '').toLowerCase().includes(q) ||
+                             (acc.userEmail || '').toLowerCase().includes(q) ||
+                             (acc.status || '').toLowerCase().includes(q) ||
+                             (acc.accountType || '').toLowerCase().includes(q);
+                    }).length === 0 && (
+                    <p className="text-slate-500 text-center py-12 text-xs">
+                      {propAccountSearch ? `No accounts matching "${propAccountSearch}"` : 'No active prop accounts found.'}
+                    </p>
                   )}
                 </div>
               </div>
@@ -6849,16 +7276,55 @@ export default function AdminPanel() {
                     />
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-400">Discount Percent (%)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="100"
-                      value={newCouponPercent}
-                      onChange={(e) => setNewCouponPercent(Number(e.target.value))}
-                      className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none font-mono"
-                    />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">Discount Type</label>
+                      <select
+                        value={newCouponType}
+                        onChange={(e) => setNewCouponType(e.target.value as 'percent' | 'fixed')}
+                        className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none font-mono bg-slate-900 border border-white/10"
+                      >
+                        <option value="percent">% Percentage</option>
+                        <option value="fixed">$ Fixed Amount</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">
+                        {newCouponType === 'percent' ? 'Discount %' : 'Discount ($)'}
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max={newCouponType === 'percent' ? 100 : 10000}
+                        value={newCouponValue}
+                        onChange={(e) => setNewCouponValue(Number(e.target.value))}
+                        className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">Max Usage Limit</label>
+                      <input
+                        type="number"
+                        placeholder="Unlimited (e.g. 100)"
+                        value={newCouponMaxUses}
+                        onChange={(e) => setNewCouponMaxUses(e.target.value)}
+                        className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none font-mono"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">Expiry Date</label>
+                      <input
+                        type="date"
+                        value={newCouponExpiresAt}
+                        onChange={(e) => setNewCouponExpiresAt(e.target.value)}
+                        className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none font-mono bg-slate-900 border border-white/10"
+                      />
+                    </div>
                   </div>
 
                   {/* Account Types Checkbox Selector */}
@@ -6936,7 +7402,9 @@ export default function AdminPanel() {
                       <tr className="border-b border-white/10 font-mono uppercase text-slate-400">
                         <th className="py-2.5">Code</th>
                         <th className="py-2.5">Discount</th>
-                        <th className="py-2.5">Applicable Accounts</th>
+                        <th className="py-2.5">Usage</th>
+                        <th className="py-2.5">Expiry</th>
+                        <th className="py-2.5">Accounts</th>
                         <th className="py-2.5">Status</th>
                         <th className="py-2.5 text-right">Actions</th>
                       </tr>
@@ -6946,17 +7414,23 @@ export default function AdminPanel() {
                         const types = c.applicableAccountTypes || ['all'];
                         const isAll = types.includes('all') || types.length === 5 || types.length === 0;
 
+                        const isFixed = c.discountType === 'fixed' || (c.discountAmount && c.discountAmount > 0 && !c.discountPercent);
+                        const discDisplay = isFixed ? `$${c.discountAmount} OFF` : `${c.discountPercent}% OFF`;
+                        const usageDisplay = c.maxUses && c.maxUses > 0 ? `${c.usedCount || 0} / ${c.maxUses}` : `${c.usedCount || 0} (Unlimited)`;
+
                         return (
                           <tr key={c.code} className="hover:bg-white/[0.02]">
                             <td className="py-3 font-mono font-bold text-white">{c.code}</td>
-                            <td className="py-3 font-mono text-blue-400 font-bold">{c.discountPercent}%</td>
+                            <td className="py-3 font-mono text-blue-400 font-bold">{discDisplay}</td>
+                            <td className="py-3 font-mono text-xs text-slate-300">{usageDisplay}</td>
+                            <td className="py-3 font-mono text-xs text-slate-400">{c.expiresAt || 'No Expiry'}</td>
                             <td className="py-3">
                               {isAll ? (
                                 <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full text-[10px] font-bold">
-                                  All Accounts
+                                  All
                                 </span>
                               ) : (
-                                <div className="flex flex-wrap gap-1 max-w-[200px]">
+                                <div className="flex flex-wrap gap-1 max-w-[150px]">
                                   {types.map(t => {
                                     const labels: Record<string, string> = {
                                       one_step: 'One Step',
@@ -7640,7 +8114,7 @@ export default function AdminPanel() {
                       <span>Admin Rule Breach Center</span>
                     </h3>
                     <p className="text-xs text-slate-400">
-                      Monitor all system-detected risk, consistency, and pacing rule violations. Action notices to Warning, Ignored, or Breach statuses.
+                      Monitor all system-detected risk, drawdown, and pacing rule violations. Action notices to Warning, Ignored, or Breach statuses.
                     </p>
                   </div>
                   <span className="px-3 py-1 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-full font-mono font-bold uppercase tracking-wider">
@@ -7990,7 +8464,7 @@ export default function AdminPanel() {
                       rows={8}
                       value={cmsTerms}
                       onChange={(e) => setCmsTerms(e.target.value)}
-                      placeholder="Describe proprietary challenge terms, user rules, consistency regulations, and IP guidelines..."
+                      placeholder="Describe proprietary challenge terms, user rules, trading regulations, and IP guidelines..."
                       className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-slate-600 font-mono focus:outline-none focus:border-blue-500 flex-1"
                     />
                     <button
@@ -8129,7 +8603,7 @@ export default function AdminPanel() {
                           type="text"
                           value={faqQuestion}
                           onChange={(e) => setFaqQuestion(e.target.value)}
-                          placeholder="e.g., What are the consistency guidelines?"
+                          placeholder="e.g., What are the payout guidelines?"
                           className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                         />
                       </div>
@@ -8368,7 +8842,7 @@ export default function AdminPanel() {
                           rows={5}
                           value={ruleCustomRules}
                           onChange={(e) => setRuleCustomRules(e.target.value)}
-                          placeholder="- Minimum trading days: 0 days&#10;- Consistency rule: None&#10;- Overnight and weekend holding: Allowed"
+                          placeholder="- Minimum trading days: 0 days&#10;- Overnight and weekend holding: Allowed&#10;- Expert advisors: Fully supported"
                           className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-blue-500"
                         />
                       </div>

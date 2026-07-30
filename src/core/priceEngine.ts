@@ -114,8 +114,8 @@ export const priceEngineState: Record<string, SymbolPrice> = {};
 export const symbolTrendState: Record<string, SymbolTrend> = {};
 
 // Persistence keys
-const PRICE_STATE_KEY = 'atfunding_price_engine_state_v10';
-const TREND_STATE_KEY = 'atfunding_trend_engine_state_v10';
+const PRICE_STATE_KEY = 'atfunding_price_engine_state_v11';
+const TREND_STATE_KEY = 'atfunding_trend_engine_state_v11';
 
 // Calibrated step configs for per-symbol realistic forex market tick steps
 export const TICK_STEP_MAP: Record<string, { baseStep: number; maxStep: number }> = {
@@ -151,21 +151,28 @@ export const TICK_STEP_MAP: Record<string, { baseStep: number; maxStep: number }
   ETHUSD: { baseStep: 0.35,     maxStep: 2.20 },
 };
 
-export function getMaxSameDirectionTicks(symbol: string): number {
-  if (symbol === 'XAUUSD' || symbol === 'XAGUSD') {
-    // Gold/Metals: 3-6 candles limit (~15-30 ticks)
-    return 15 + Math.floor(Math.random() * 16);
+export function stringToSeed(str: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  if (symbol === 'BTCUSD' || symbol === 'ETHUSD') {
-    // Crypto: 2-10 candles limit (~10-50 ticks)
-    return 10 + Math.floor(Math.random() * 41);
-  }
-  if (symbol === 'NAS100' || symbol === 'US30' || symbol === 'SPX500') {
-    // Indices: 3-8 candles limit (~15-40 ticks)
-    return 15 + Math.floor(Math.random() * 26);
-  }
-  // Forex & Energy: 3-7 candles limit (~15-35 ticks)
-  return 15 + Math.floor(Math.random() * 21);
+  return hash >>> 0;
+}
+
+export function createSeededRandom(seed: number): () => number {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function getMaxSameDirectionTicks(_symbol: string): number {
+  // Cap consecutive same direction ticks to 8-16 ticks to enforce natural retracements
+  return 8 + Math.floor(Math.random() * 9);
 }
 
 function getRandomTrendState(symbol: string, prevTrend?: SymbolTrend): SymbolTrend {
@@ -282,6 +289,19 @@ function notifyListeners() {
       console.error("Error in price listener:", e);
     }
   });
+}
+
+const globalFeedChannel = typeof window !== 'undefined' && 'BroadcastChannel' in window
+  ? new BroadcastChannel('atfunding_global_market_feed')
+  : null;
+
+if (globalFeedChannel) {
+  globalFeedChannel.onmessage = (evt) => {
+    if (evt.data && evt.data.type === 'GLOBAL_PRICE_TICK' && evt.data.prices) {
+      Object.assign(priceEngineState, evt.data.prices);
+      notifyListeners();
+    }
+  };
 }
 
 function getSessionMultiplier(): number {
@@ -440,6 +460,11 @@ function triggerTickFluctuation() {
   if (tickCounter % 10 === 0) {
     saveStateToStorage();
   }
+
+  globalFeedChannel?.postMessage({
+    type: 'GLOBAL_PRICE_TICK',
+    prices: priceEngineState
+  });
 
   notifyListeners();
 }

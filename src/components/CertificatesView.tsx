@@ -178,6 +178,21 @@ export default function CertificatesView({ certificates, onClose }: Certificates
                     </p>
                   </div>
 
+                  {/* Certificate Preview Box if uploaded image exists */}
+                  {(cert.certificateUrl || cert.certificateImage) && (
+                    <div className="relative rounded-2xl overflow-hidden border border-white/10 max-h-40 bg-black/40 group-hover:border-amber-500/30 transition-colors">
+                      <img 
+                        src={cert.certificateUrl || cert.certificateImage} 
+                        alt={certPhase} 
+                        className="w-full h-36 object-cover object-top" 
+                        onError={(e) => {
+                          // Hide image if it's a PDF or unrenderable link
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+
                   <div className="space-y-1.5 text-xs text-slate-400 bg-black/20 p-3.5 rounded-2xl border border-white/5">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Trader Name</span>
@@ -193,19 +208,31 @@ export default function CertificatesView({ certificates, onClose }: Certificates
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Issue Date</span>
-                      <span className="text-slate-300 font-mono">{cert.issueDate || cert.date || new Date().toLocaleDateString()}</span>
+                      <span className="text-slate-300 font-mono">{cert.issueDate || cert.uploadDate || cert.date || new Date().toLocaleDateString()}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-6 pt-4 border-t border-white/10 flex gap-2">
+                <div className="mt-6 pt-4 border-t border-white/10 grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setActiveCert(cert)}
-                    className="flex-1 py-2.5 bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 rounded-xl text-xs font-extrabold transition-all text-center uppercase tracking-wider cursor-pointer"
+                    className="py-2.5 bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 rounded-xl text-xs font-extrabold transition-all text-center uppercase tracking-wider cursor-pointer flex items-center justify-center gap-1.5"
                   >
-                    View Certificate
+                    <Award className="w-3.5 h-3.5" />
+                    <span>View Full Size</span>
                   </button>
+
+                  <a
+                    href={cert.certificateUrl || cert.certificateImage || '#'}
+                    download={`ATFunding_Certificate_${certId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="py-2.5 bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/30 rounded-xl text-xs font-extrabold transition-all text-center uppercase tracking-wider cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </a>
                 </div>
               </div>
             );
@@ -226,14 +253,24 @@ export default function CertificatesView({ certificates, onClose }: Certificates
               </div>
 
               <div className="flex items-center space-x-2">
+                <a
+                  href={activeCert.certificateUrl || activeCert.certificateImage || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-600/20"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download / Open File</span>
+                </a>
+
                 <button
                   type="button"
                   disabled={isDownloading}
                   onClick={() => downloadPNG(activeCert)}
-                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-600/20"
+                  className="flex items-center space-x-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-white/10"
                 >
                   <ImageIcon className="w-3.5 h-3.5" />
-                  <span>{isDownloading ? 'Generating...' : 'Download PNG'}</span>
+                  <span>Export PNG</span>
                 </button>
 
                 <button
@@ -243,26 +280,52 @@ export default function CertificatesView({ certificates, onClose }: Certificates
                   className="flex items-center space-x-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-extrabold transition-all cursor-pointer shadow-lg shadow-amber-500/20"
                 >
                   <FileText className="w-3.5 h-3.5" />
-                  <span>{isDownloading ? 'Generating...' : 'Download PDF'}</span>
+                  <span>Export PDF</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setActiveCert(null)}
-                  className="p-2 text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+                  className="p-2 text-slate-400 hover:text-white rounded-xl bg-white/5 hover:bg-white/10 transition-colors cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* Rendered Official Certificate Card Node (for display, canvas PNG, and PDF download) */}
-            <div className="w-full">
-              <LuxuryCertificate 
-                certificate={activeCert}
-                template={template}
-                containerRef={certRef}
-              />
+            {/* Rendered Official Certificate Card or Direct Upload Image/PDF View */}
+            <div className="w-full bg-slate-950 border border-white/10 rounded-3xl p-4 overflow-hidden">
+              {(activeCert.certificateUrl || activeCert.certificateImage) ? (
+                <div className="w-full flex items-center justify-center p-2">
+                  <img 
+                    src={activeCert.certificateUrl || activeCert.certificateImage} 
+                    alt="Full size certificate" 
+                    className="max-h-[80vh] w-auto object-contain rounded-2xl shadow-2xl border border-white/10"
+                    onError={(e) => {
+                      // Fallback if URL is PDF or not an image element
+                      (e.target as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                  <div id="pdf-fallback-container" className="text-center p-8 space-y-4">
+                    <FileText className="w-16 h-16 text-amber-400 mx-auto" />
+                    <p className="text-sm font-bold text-white">Digital Document / PDF Certificate</p>
+                    <a
+                      href={activeCert.certificateUrl || activeCert.certificateImage}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-6 py-3 bg-amber-500 text-slate-950 font-extrabold rounded-xl text-xs inline-block"
+                    >
+                      Open PDF in New Window
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <LuxuryCertificate 
+                  certificate={activeCert}
+                  template={template}
+                  containerRef={certRef}
+                />
+              )}
             </div>
 
           </div>

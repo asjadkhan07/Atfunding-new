@@ -23,7 +23,7 @@ export const DEFAULT_CERT_TEMPLATE: CertificateTemplate = {
   companyName: 'ATFUNDING',
   companyTagline: 'TRADE. PROVE. GET FUNDED.',
   sealText1: 'DISCIPLINE',
-  sealText2: 'CONSISTENCY',
+  sealText2: 'EXCELLENCE',
   sealText3: 'SUCCESS',
   footerMessage: 'THANK YOU FOR TRUSTING ATFUNDING. WE WISH YOU CONTINUED SUCCESS IN YOUR TRADING JOURNEY.',
   bgImageUrl: '',
@@ -297,7 +297,7 @@ export default function LuxuryCertificate({ certificate, template, containerRef 
               <span className="text-[6px] sm:text-[7px] font-black text-[#E5C07B] uppercase leading-tight font-mono tracking-tighter">
                 {mergedTemplate.sealText1 || 'DISCIPLINE'}
                 <br />
-                {mergedTemplate.sealText2 || 'CONSISTENCY'}
+                {mergedTemplate.sealText2 || 'EXCELLENCE'}
                 <br />
                 {mergedTemplate.sealText3 || 'SUCCESS'}
               </span>

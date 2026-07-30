@@ -16,7 +16,7 @@ import { subscribeToPrices, startPriceEngine, DECIMAL_PLACES, priceEngineState a
 import { RichTrade, subscribeToPositions, executeClosePosition } from '../core/positionEngine';
 import { executeOrder } from '../core/orderEngine';
 import { recalculateAccountMetrics, calculatePositionMargin } from '../core/accountEngine';
-import { evaluateAccountRisk } from '../core/riskEngine';
+import { evaluateAccountRisk, getMaxLotSize, calculateDynamicAccountMetrics, calculateAccountRiskScore } from '../core/riskEngine';
 import { calculateTradePnL, getContractSize } from '../core/pnlEngine';
 import { getCandles, purgeAndRebuildAllCandles, getTimeframeStatus, getCandleEngineMetrics } from '../core/candleEngine';
 
@@ -879,6 +879,43 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
 
         return;
       }
+    }
+
+    // Maximum Position Size Rule Enforcement
+    const accountSizeVal = selectedAccount.size || selectedAccount.startingBalance || 10000;
+    const maxLotAllowed = getMaxLotSize(accountSizeVal);
+    if (Number(lots) > maxLotAllowed + 0.001) {
+      setErrorMsg(`🚫 Max Lot Limit Exceeded: Maximum allowed position size for a $${accountSizeVal.toLocaleString()} account is ${maxLotAllowed} Lots (Attempted: ${lots} Lots).`);
+
+      setRuleBreachModal({
+        isOpen: true,
+        title: '🚫 Order Blocked: Oversized Position',
+        subtitle: `Maximum Position Size Allowed: ${maxLotAllowed} Lots | Attempted: ${lots} Lots`,
+        type: 'rule',
+        message: `Your position size of ${lots} Lots exceeds the max lot limit of ${maxLotAllowed} Lots for your $${accountSizeVal.toLocaleString()} account size.`,
+        details: `Maximum Lot Limits: $10k Account = 0.20 Lots max; $25k Account = 0.50 Lots max; $50k Account = 1.00 Lot max; $100k Account = 2.00 Lots max.`
+      });
+
+      // Record rule violation in Firestore
+      const violationId = 'VIO-LOT-' + Math.floor(100000 + Math.random() * 900000);
+      const uName = userProfile?.name || userProfile?.displayName || 'Trader';
+      const uEmail = userProfile?.email || 'trader@atfunding.io';
+      await setDoc(doc(db, 'ruleViolations', violationId), {
+        id: violationId,
+        accountId: selectedAccount.id,
+        accountNumber: selectedAccount.login || selectedAccount.id,
+        userId: selectedAccount.userId,
+        userName: uName,
+        userEmail: uEmail,
+        symbol: selectedSymbol.symbol,
+        type: tradeType,
+        lots: Number(lots),
+        violationType: 'Oversized Position Size Blocked',
+        description: `Attempted ${lots} Lots on $${accountSizeVal.toLocaleString()} account (Max allowed: ${maxLotAllowed} Lots).`,
+        status: 'Blocked',
+        timestamp: new Date().toISOString()
+      });
+      return;
     }
 
     // Check Free Margin before order execution

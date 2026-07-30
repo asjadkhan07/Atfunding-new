@@ -118,11 +118,42 @@ export interface Affiliate {
 export interface Coupon {
   id?: string;
   code: string;
-  discountPercent: number;
+  discountType?: 'percent' | 'fixed';
+  discountPercent?: number;
+  discountAmount?: number;
   active: boolean;
   createdBy?: string;
+  expiresAt?: string; // ISO date string e.g. "2026-12-31" or timestamp
+  maxUses?: number; // e.g. 100
+  usedCount?: number; // e.g. 12
   applicableAccountTypes?: string[]; // e.g. ['one_step', 'two_step', 'payout_later', 'instant_bolt', 'trial'] or ['all']
   applicablePackages?: string[]; // e.g. ['one_step_5k', 'two_step_100k'] or ['all']
+}
+
+export interface LeaderboardEntry {
+  id: string;
+  rank: number;
+  userId: string;
+  traderName: string;
+  email?: string;
+  totalProfit: number;
+  winRate: number;
+  accountType: string;
+  accountSize: number | string;
+  status: 'Active' | 'Breached' | 'Funded' | 'Payout' | string;
+  pinned?: boolean;
+  customOrder?: number;
+  updatedAt?: string;
+}
+
+export interface LeaderboardOverride {
+  userId: string;
+  pinned?: boolean;
+  customOrder?: number;
+  profitOffset?: number;
+  winRateOverride?: number;
+  statusOverride?: string;
+  traderNameOverride?: string;
 }
 
 export interface Certificate {
@@ -131,15 +162,21 @@ export interface Certificate {
   userId: string;
   name: string;
   userName?: string;
-  email: string;
+  email?: string;
+  userEmail?: string;
   accountSize: string | number;
   accountType: string; // Trial, Instant, 1 Step, 2 Step, Funded
   phase: string; // Trial, Phase 1, Phase 2, Funded
+  status?: string;
   issueDate: string;
+  uploadDate?: string;
+  uploadedBy?: string;
+  certificateUrl?: string;
   certificateImage?: string;
   userPhoto?: string;
   createdAt: string;
   type?: 'payout' | 'passed_evaluation' | string;
+  certificateType?: string;
   amount?: number;
   date?: string;
   customTitle?: string;
@@ -161,7 +198,7 @@ export interface CertificateTemplate {
   companyName: string; // e.g. "ATFUNDING"
   companyTagline?: string; // e.g. "TRADE. PROVE. GET FUNDED."
   sealText1?: string; // e.g. "DISCIPLINE"
-  sealText2?: string; // e.g. "CONSISTENCY"
+  sealText2?: string; // e.g. "EXCELLENCE"
   sealText3?: string; // e.g. "SUCCESS"
   footerMessage: string;
   bgImageUrl?: string;
