@@ -406,12 +406,12 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
             const passedIso = new Date().toISOString();
 
             if (accData.accountType === 'one_step') {
-              currentStatus = 'pending_review';
+              currentStatus = 'PHASE2_PENDING';
               await updateDoc(accountRef, {
                 balance: newBalance,
                 equity: newEquity,
-                status: 'pending_review',
-                phaseStatus: 'pending_review',
+                status: 'PHASE2_PENDING',
+                phaseStatus: 'phase2_pending',
                 passedAt: passedIso
               });
 
@@ -420,8 +420,8 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
               await setDoc(doc(db, 'notifications', notifId), {
                 id: notifId,
                 userId: accData.userId,
-                title: '1-Step Challenge Passed! Review Started 🚀',
-                message: `Congratulations! Account #${accData.login || accData.id} passed the 1-Step profit target. Your account is now in PENDING REVIEW for Funded Account issuance.`,
+                title: '1-Step Challenge Passed! 🚀',
+                message: `Congratulations! Your account has successfully passed Phase 1 on Account #${accData.login || accData.id}. Please wait for admin review and activation.`,
                 type: 'info',
                 read: false,
                 createdAt: passedIso
@@ -433,32 +433,32 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 await setDoc(doc(db, 'email_queue', queueId), {
                   id: queueId,
                   recipient: userEmail,
-                  subject: 'ATFunding: 1-Step Challenge Passed - Pending Review',
-                  message: `Hello Trader,\n\nCongratulations! You reached the profit target on 1-Step Account #${accData.login || accData.id}.\n\nYour account is now undergoing manual review by our audit team. Upon approval, your Funded Account will be issued automatically.\n\nATFunding Compliance Team`,
+                  subject: 'ATFunding: 1-Step Challenge Passed - PHASE 2 PENDING',
+                  message: `Hello Trader,\n\nCongratulations! Your account has successfully passed Phase 1 on Account #${accData.login || accData.id}.\n\nPlease wait for admin review and activation.\n\nATFunding Compliance Team`,
                   createdAt: passedIso,
                   status: 'pending'
                 });
               }
 
-              setSuccessMsg("CONGRATULATIONS! You passed your 1-Step Challenge. Your account is now in Pending Review!");
+              setSuccessMsg("CONGRATULATIONS! Your account has successfully passed Phase 1. Please wait for admin review and activation.");
               setRuleBreachModal({
                 isOpen: true,
-                title: '🎉 1-Step Challenge Passed!',
-                subtitle: 'Account Status: Pending Review',
+                title: '🟡 PHASE 2 PENDING',
+                subtitle: 'Phase 1 Passed Successfully',
                 type: 'success',
-                message: `Congratulations! You reached the profit target on 1-Step Account #${accData.login || accData.id}.`,
-                details: `Your account evaluation is now under Manual Review. Once approved by our team, your live Funded Account will be issued automatically.`
+                message: `Your account has successfully passed Phase 1.`,
+                details: `Please wait for admin review and activation. Trading on this account is disabled until admin review and activation.`
               });
               onRefreshAccount();
               return;
 
             } else if (accData.accountType === 'two_step') {
               if (accData.phase === 1) {
-                currentStatus = 'phase2_pending';
+                currentStatus = 'PHASE2_PENDING';
                 await updateDoc(accountRef, {
                   balance: newBalance,
                   equity: newEquity,
-                  status: 'phase2_pending',
+                  status: 'PHASE2_PENDING',
                   phaseStatus: 'phase2_pending',
                   passedAt: passedIso
                 });
@@ -468,8 +468,8 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 await setDoc(doc(db, 'notifications', notifId), {
                   id: notifId,
                   userId: accData.userId,
-                  title: 'Phase 1 Passed! Review Started 🚀',
-                  message: `Congratulations! Account #${accData.login || accData.id} has passed Phase 1 profit target. Phase 2 activation is now PENDING REVIEW.`,
+                  title: 'Phase 1 Passed! 🚀',
+                  message: `Your account has successfully passed Phase 1 on Account #${accData.login || accData.id}. Please wait for admin review and activation.`,
                   type: 'info',
                   read: false,
                   createdAt: passedIso
@@ -481,30 +481,30 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                   await setDoc(doc(db, 'email_queue', queueId), {
                     id: queueId,
                     recipient: userEmail,
-                    subject: 'ATFunding: Phase 1 Passed - Pending Review',
-                    message: `Hello Trader,\n\nCongratulations! You reached the profit target for Phase 1 on Account #${accData.login || accData.id}.\n\nYour account is now undergoing manual review. Upon admin approval, your Phase 2 account will be unlocked.\n\nATFunding Compliance Team`,
+                    subject: 'ATFunding: Phase 1 Passed - PHASE 2 PENDING',
+                    message: `Hello Trader,\n\nYour account has successfully passed Phase 1 on Account #${accData.login || accData.id}.\n\nPlease wait for admin review and activation.\n\nATFunding Compliance Team`,
                     createdAt: passedIso,
                     status: 'pending'
                   });
                 }
 
-                setSuccessMsg("CONGRATULATIONS! You passed Phase 1. Phase 2 activation is pending admin review!");
+                setSuccessMsg("CONGRATULATIONS! Your account has successfully passed Phase 1. Please wait for admin review and activation.");
                 setRuleBreachModal({
                   isOpen: true,
-                  title: '🎉 Phase 1 Passed Successfully!',
-                  subtitle: 'Phase 2 Activation Pending Review',
+                  title: '🟡 PHASE 2 PENDING',
+                  subtitle: 'Phase 1 Passed Successfully',
                   type: 'success',
-                  message: `Congratulations! You reached the profit target for Phase 1 on Account #${accData.login || accData.id}.`,
-                  details: `Your Phase 1 evaluation has been submitted for Manual Review. Once approved by our team, your Phase 2 account will be activated immediately.`
+                  message: `Your account has successfully passed Phase 1.`,
+                  details: `Please wait for admin review and activation.`
                 });
                 onRefreshAccount();
                 return;
               } else if (accData.phase === 2) {
-                currentStatus = 'funded_pending';
+                currentStatus = 'FUNDED_PENDING';
                 await updateDoc(accountRef, {
                   balance: newBalance,
                   equity: newEquity,
-                  status: 'funded_pending',
+                  status: 'FUNDED_PENDING',
                   phaseStatus: 'funded_pending',
                   passedAt: passedIso
                 });
@@ -514,8 +514,8 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                 await setDoc(doc(db, 'notifications', notifId), {
                   id: notifId,
                   userId: accData.userId,
-                  title: 'Phase 2 Passed! Review Started 🚀',
-                  message: `Congratulations! Account #${accData.login || accData.id} passed Phase 2. Funded Account activation is now PENDING REVIEW.`,
+                  title: 'Phase 2 Passed! 🏆',
+                  message: `Congratulations! Your account has successfully passed Phase 2 on Account #${accData.login || accData.id}. Please wait for admin approval and funded account activation.`,
                   type: 'info',
                   read: false,
                   createdAt: passedIso
@@ -527,21 +527,21 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                   await setDoc(doc(db, 'email_queue', queueId), {
                     id: queueId,
                     recipient: userEmail,
-                    subject: 'ATFunding: Phase 2 Passed - Pending Review',
-                    message: `Hello Trader,\n\nCongratulations! You completed Phase 2 on Account #${accData.login || accData.id}.\n\nYour account is now undergoing final manual review. Upon admin approval, your live Funded Account will be issued automatically.\n\nATFunding Compliance Team`,
+                    subject: 'ATFunding: Phase 2 Passed - FUNDED PENDING',
+                    message: `Hello Trader,\n\nCongratulations! Your account has successfully passed Phase 2 on Account #${accData.login || accData.id}.\n\nPlease wait for admin approval and funded account activation.\n\nATFunding Compliance Team`,
                     createdAt: passedIso,
                     status: 'pending'
                   });
                 }
 
-                setSuccessMsg("CONGRATULATIONS! You passed Phase 2. Funded account activation is pending admin review!");
+                setSuccessMsg("CONGRATULATIONS! Your account has successfully passed Phase 2. Please wait for admin approval and funded account activation.");
                 setRuleBreachModal({
                   isOpen: true,
-                  title: '🎉 Evaluation Phase 2 Complete!',
-                  subtitle: 'Funded Account Pending Admin Review',
+                  title: '🟢 FUNDED PENDING',
+                  subtitle: 'Phase 2 Passed Successfully',
                   type: 'success',
-                  message: `Outstanding performance! You passed Phase 2 on Account #${accData.login || accData.id}.`,
-                  details: `Your account is now pending final manual review for Funded Account activation. Once approved by our team, your live Funded Account and Payout section will unlock automatically!`
+                  message: `Congratulations! Your account has successfully passed Phase 2.`,
+                  details: `Please wait for admin approval and funded account activation.`
                 });
                 onRefreshAccount();
                 return;
@@ -1141,6 +1141,17 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   const tradingDays = getTradingDaysProgress();
   const closedPnL = closedTrades.reduce((sum, t) => sum + (t.profit || 0), 0);
 
+  const isChallengeAccount = Boolean(
+    selectedAccount && (selectedAccount.accountType === 'one_step' || selectedAccount.accountType === 'two_step')
+  );
+  const isPhaseLocked = Boolean(
+    isChallengeAccount && selectedAccount && (
+      selectedAccount.status === 'PHASE2_PENDING' || selectedAccount.status === 'phase2_pending' ||
+      selectedAccount.status === 'FUNDED_PENDING' || selectedAccount.status === 'funded_pending' ||
+      selectedAccount.status === 'pending_review' || selectedAccount.status === 'Pending Review'
+    )
+  );
+
   return (
     <div id="trading-terminal" className="space-y-6 text-white bg-[#070a13] p-4 md:p-6 rounded-3xl border border-white/5 relative">
       
@@ -1153,9 +1164,13 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
               <span className={`px-2.5 py-1 text-[10px] font-bold font-mono uppercase rounded-full ${
                 selectedAccount.status === 'active' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
                 selectedAccount.status === 'breached' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                selectedAccount.status === 'PHASE2_PENDING' || selectedAccount.status === 'phase2_pending' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                selectedAccount.status === 'FUNDED_PENDING' || selectedAccount.status === 'funded_pending' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
                 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
               }`}>
-                {selectedAccount.status}
+                {selectedAccount.status === 'phase2_pending' || selectedAccount.status === 'PHASE2_PENDING' ? 'PHASE 2 PENDING' :
+                 selectedAccount.status === 'funded_pending' || selectedAccount.status === 'FUNDED_PENDING' ? 'FUNDED PENDING' :
+                 selectedAccount.status}
               </span>
             )}
           </div>
@@ -1184,6 +1199,77 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
           <p className="text-xs text-slate-400 leading-relaxed">
             Please register or purchase an evaluation package, or choose an active trading account from the accounts drop-down on the sidebar menu.
           </p>
+        </div>
+      ) : isPhaseLocked ? (
+        <div className="bg-[#0b0f19] border-2 border-white/10 rounded-3xl p-8 md:p-12 text-center max-w-2xl mx-auto space-y-6 shadow-2xl backdrop-blur-md">
+          {selectedAccount.status === 'PHASE2_PENDING' || selectedAccount.status === 'phase2_pending' ? (
+            <>
+              <div className="w-16 h-16 rounded-full bg-amber-500/20 border-2 border-amber-500/40 flex items-center justify-center mx-auto text-amber-400 shadow-lg shadow-amber-500/10">
+                <Award className="w-8 h-8 animate-bounce" />
+              </div>
+              <div className="space-y-3">
+                <span className="px-4 py-1.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 font-black text-xs uppercase tracking-widest inline-block">
+                  🟡 PHASE 2 PENDING
+                </span>
+                <h2 className="text-xl md:text-2xl font-black text-amber-100 uppercase tracking-wide">
+                  Your account has successfully passed Phase 1.
+                </h2>
+                <p className="text-amber-200/90 font-medium text-sm">
+                  Please wait for admin review and activation.
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="w-16 h-16 rounded-full bg-emerald-500/20 border-2 border-emerald-500/40 flex items-center justify-center mx-auto text-emerald-400 shadow-lg shadow-emerald-500/10">
+                <Award className="w-8 h-8 animate-bounce" />
+              </div>
+              <div className="space-y-3">
+                <span className="px-4 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-black text-xs uppercase tracking-widest inline-block">
+                  🟢 FUNDED PENDING
+                </span>
+                <h2 className="text-xl md:text-2xl font-black text-emerald-100 uppercase tracking-wide">
+                  Congratulations!
+                </h2>
+                <p className="text-emerald-100 font-bold text-base">
+                  Your account has successfully passed Phase 2.
+                </p>
+                <p className="text-emerald-200/90 font-medium text-sm">
+                  Please wait for admin approval and funded account activation.
+                </p>
+              </div>
+            </>
+          )}
+
+          {/* Account Display Summary */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-6 border-t border-white/10 text-left">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              <span className="text-[10px] text-slate-400 uppercase font-bold block tracking-wider">Account Status</span>
+              <span className="text-xs font-mono font-extrabold text-amber-300 block mt-1 truncate uppercase">
+                {selectedAccount.status === 'PHASE2_PENDING' || selectedAccount.status === 'phase2_pending' ? 'PHASE 2 PENDING' : 'FUNDED PENDING'}
+              </span>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              <span className="text-[10px] text-slate-400 uppercase font-bold block tracking-wider">Passed Phase</span>
+              <span className="text-xs font-mono font-extrabold text-blue-400 block mt-1">
+                {selectedAccount.status === 'PHASE2_PENDING' || selectedAccount.status === 'phase2_pending' ? 'Phase 1 Passed' : 'Phase 2 Passed'}
+              </span>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              <span className="text-[10px] text-slate-400 uppercase font-bold block tracking-wider">Current Balance</span>
+              <span className="text-xs font-mono font-extrabold text-white block mt-1">
+                ${(selectedAccount.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4">
+              <span className="text-[10px] text-slate-400 uppercase font-bold block tracking-wider">Current Profit</span>
+              <span className={`text-xs font-mono font-extrabold block mt-1 ${
+                ((selectedAccount.balance || 0) - (selectedAccount.startingBalance || selectedAccount.size || 10000)) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
+                ${((selectedAccount.balance || 0) - (selectedAccount.startingBalance || selectedAccount.size || 10000)).toFixed(2)}
+              </span>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="space-y-6">

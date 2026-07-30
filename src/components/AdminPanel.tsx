@@ -5005,75 +5005,205 @@ export default function AdminPanel() {
           {/* TAB 2.5: PAYMENT MANAGEMENT CENTER (ORDERS & WALLETS) */}
           {activeTab === 'orders' && (
             <div className="space-y-8 animate-fade-in">
-              {/* Wallet Address Configuration */}
-              <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl">
-                <h3 className="text-base font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-2">
-                  <Coins className="w-5 h-5 text-blue-400" />
-                  <span>Administrative Wallet Address Setup</span>
-                </h3>
-                <p className="text-xs text-slate-400 mb-6">
-                  Set the receiving cryptocurrency addresses displayed to traders on checkout.
-                </p>
+              {/* Wallet Address & Payment QR Configuration */}
+              <div className="bg-white/5 border border-white/10 rounded-3xl p-6 backdrop-blur-sm shadow-xl space-y-6">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-white/10 pb-4">
+                  <div>
+                    <h3 className="text-base font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      <Coins className="w-5 h-5 text-blue-400" />
+                      <span>Administrative Payment & QR Code Setup</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Set receiving crypto wallet addresses, UPI ID, and QR code images shown to traders on checkout.
+                    </p>
+                  </div>
+                  {walletSettingsMsg && (
+                    <span className="text-xs text-emerald-400 font-bold flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-xl animate-fade-in">
+                      <Check className="w-4 h-4" />
+                      <span>{walletSettingsMsg}</span>
+                    </span>
+                  )}
+                </div>
 
-                <form onSubmit={handleUpdateWalletSettings} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-slate-400 uppercase font-semibold">Bitcoin (BTC) Address</label>
-                    <input
-                      type="text"
-                      placeholder="Enter BTC Wallet Address"
-                      value={btcAddressInput}
-                      onChange={(e) => setBtcAddressInput(e.target.value)}
-                      className="w-full h-11 bg-white/5 border border-white/10 rounded-xl px-4 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
-                    />
+                <form onSubmit={handleUpdateWalletSettings} className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+                    {[
+                      {
+                        key: 'btc',
+                        label: 'Bitcoin (BTC)',
+                        addressValue: btcAddressInput,
+                        setAddress: setBtcAddressInput,
+                        qrValue: btcQrCodeInput,
+                        setQr: setBtcQrCodeInput,
+                        placeholder: 'e.g. bc1q...',
+                        badge: 'BTC',
+                        badgeBg: 'bg-amber-500/10 border-amber-500/30 text-amber-400',
+                        type: 'crypto'
+                      },
+                      {
+                        key: 'usdtTrc20',
+                        label: 'USDT (TRC20)',
+                        addressValue: usdtTrc20AddressInput,
+                        setAddress: setUsdtTrc20AddressInput,
+                        qrValue: usdtTrc20QrCodeInput,
+                        setQr: setUsdtTrc20QrCodeInput,
+                        placeholder: 'e.g. TL5o...',
+                        badge: 'TRC20',
+                        badgeBg: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
+                        type: 'crypto'
+                      },
+                      {
+                        key: 'usdtErc20',
+                        label: 'USDT (ERC20)',
+                        addressValue: usdtErc20AddressInput,
+                        setAddress: setUsdtErc20AddressInput,
+                        qrValue: usdtErc20QrCodeInput,
+                        setQr: setUsdtErc20QrCodeInput,
+                        placeholder: 'e.g. 0x71C...',
+                        badge: 'ERC20',
+                        badgeBg: 'bg-blue-500/10 border-blue-500/30 text-blue-400',
+                        type: 'crypto'
+                      },
+                      {
+                        key: 'ltc',
+                        label: 'Litecoin (LTC)',
+                        addressValue: ltcAddressInput,
+                        setAddress: setLtcAddressInput,
+                        qrValue: ltcQrCodeInput,
+                        setQr: setLtcQrCodeInput,
+                        placeholder: 'e.g. ltc1q...',
+                        badge: 'LTC',
+                        badgeBg: 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400',
+                        type: 'crypto'
+                      },
+                      {
+                        key: 'upi',
+                        label: 'UPI Payment',
+                        addressValue: upiIdInput,
+                        setAddress: setUpiIdInput,
+                        qrValue: upiQrCodeInput,
+                        setQr: setUpiQrCodeInput,
+                        placeholder: 'e.g. atfunding@upi or 9876543210@paytm',
+                        badge: 'UPI / VPA',
+                        badgeBg: 'bg-purple-500/10 border-purple-500/30 text-purple-400',
+                        type: 'upi'
+                      },
+                    ].map((item) => {
+                      const effectiveQr = item.qrValue || (item.addressValue ? `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(item.addressValue)}` : '');
+                      return (
+                        <div key={item.key} className="bg-black/40 border border-white/10 rounded-2xl p-5 space-y-4 flex flex-col justify-between shadow-lg hover:border-white/20 transition-all">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-extrabold text-white flex items-center gap-2">
+                                <span>{item.label}</span>
+                              </span>
+                              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold uppercase border ${item.badgeBg}`}>
+                                {item.badge}
+                              </span>
+                            </div>
+
+                            {/* Address / UPI ID input */}
+                            <div className="space-y-1">
+                              <label className="text-[11px] text-slate-400 font-bold uppercase tracking-wider block">
+                                {item.type === 'upi' ? 'UPI ID / VPA Address' : 'Wallet Address'}
+                              </label>
+                              <input
+                                type="text"
+                                placeholder={item.placeholder}
+                                value={item.addressValue}
+                                onChange={(e) => item.setAddress(e.target.value)}
+                                className="w-full h-10 bg-white/5 border border-white/10 rounded-xl px-3 text-xs font-mono text-white focus:outline-none focus:border-blue-500 transition-colors"
+                              />
+                            </div>
+
+                            {/* Custom QR URL or Upload */}
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                                  QR Code Image
+                                </label>
+                                <label className="cursor-pointer text-[10px] bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 font-bold px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
+                                  <Upload className="w-3 h-3" />
+                                  <span>{isUploadingQR === item.key ? 'Uploading...' : 'Upload Image'}</span>
+                                  <input 
+                                    type="file" 
+                                    accept="image/*" 
+                                    className="hidden" 
+                                    onChange={(e) => handleQRUpload(e, item.key)} 
+                                  />
+                                </label>
+                              </div>
+                              <div className="flex gap-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="Paste Custom QR Image URL (Optional)"
+                                  value={item.qrValue}
+                                  onChange={(e) => item.setQr(e.target.value)}
+                                  className="w-full h-9 bg-white/5 border border-white/10 rounded-xl px-3 text-[11px] font-mono text-slate-300 focus:outline-none focus:border-blue-500"
+                                />
+                                {item.qrValue && (
+                                  <button
+                                    type="button"
+                                    onClick={() => item.setQr('')}
+                                    className="px-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-xl text-xs flex items-center justify-center transition-colors"
+                                    title="Clear custom QR"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* QR Code Preview Box */}
+                          <div className="pt-2">
+                            <div className="bg-black/60 border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center min-h-[160px] text-center gap-2 relative">
+                              {effectiveQr ? (
+                                <>
+                                  <img 
+                                    src={effectiveQr} 
+                                    alt={`${item.label} QR Code`} 
+                                    className="w-32 h-32 object-contain rounded-lg border border-white/10 bg-white p-1"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                  <span className="text-[10px] font-mono text-slate-400">
+                                    {item.qrValue ? '🟢 Custom QR Image Uploaded' : '⚡ Auto-Generated from Address'}
+                                  </span>
+                                </>
+                              ) : (
+                                <div className="space-y-1 text-slate-500 p-4">
+                                  <ImageIcon className="w-8 h-8 mx-auto opacity-30" />
+                                  <p className="text-[11px] font-medium">No QR Code Available</p>
+                                  <p className="text-[10px] text-slate-600">Enter address or upload custom QR</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-slate-400 uppercase font-semibold">USDT TRC20 Address</label>
-                    <input
-                      type="text"
-                      placeholder="Enter USDT TRC20 Wallet Address"
-                      value={usdtTrc20AddressInput}
-                      onChange={(e) => setUsdtTrc20AddressInput(e.target.value)}
-                      className="w-full h-11 bg-white/5 border border-white/10 rounded-xl px-4 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-slate-400 uppercase font-semibold">USDT ERC20 Address</label>
-                    <input
-                      type="text"
-                      placeholder="Enter USDT ERC20 Wallet Address"
-                      value={usdtErc20AddressInput}
-                      onChange={(e) => setUsdtErc20AddressInput(e.target.value)}
-                      className="w-full h-11 bg-white/5 border border-white/10 rounded-xl px-4 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-slate-400 uppercase font-semibold">Litecoin (LTC) Address</label>
-                    <input
-                      type="text"
-                      placeholder="Enter Litecoin Wallet Address"
-                      value={ltcAddressInput}
-                      onChange={(e) => setLtcAddressInput(e.target.value)}
-                      className="w-full h-11 bg-white/5 border border-white/10 rounded-xl px-4 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="md:col-span-2 flex items-center justify-between pt-2">
-                    {walletSettingsMsg && (
-                      <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
-                        <Check className="w-4 h-4" />
-                        <span>{walletSettingsMsg}</span>
-                      </span>
-                    )}
-                    <span className="flex-1" />
+                  {/* Save button */}
+                  <div className="flex items-center justify-between pt-4 border-t border-white/10">
+                    <p className="text-xs text-slate-400 font-medium">
+                      Changes will take effect instantly across trader checkout screens.
+                    </p>
                     <button
                       type="submit"
                       disabled={isSavingWallets}
-                      className="px-6 h-10 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-bold rounded-xl text-xs transition-colors"
+                      className="px-8 h-11 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white font-extrabold rounded-xl text-xs uppercase tracking-wider transition-all shadow-lg shadow-blue-600/20 flex items-center gap-2"
                     >
-                      {isSavingWallets ? "Saving Config..." : "Save Wallet Addresses"}
+                      {isSavingWallets ? (
+                        <span>Saving Config...</span>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Save Wallet & QR Settings</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </form>

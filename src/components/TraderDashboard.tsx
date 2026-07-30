@@ -413,11 +413,11 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   const getAccountStatusLabel = (acc: TradingAccount) => {
     if (acc.status === 'breached') return 'Breached';
     if (acc.status === 'rejected') return 'Rejected';
+    if (acc.status === 'phase2_pending' || acc.status === 'PHASE2_PENDING') return 'PHASE 2 PENDING';
+    if (acc.status === 'funded_pending' || acc.status === 'FUNDED_PENDING') return 'FUNDED PENDING';
     if (
       acc.status === 'pending_review' || 
       acc.status === 'Pending Review' || 
-      acc.status === 'phase2_pending' || 
-      acc.status === 'funded_pending' || 
       acc.status === 'Pending Approval'
     ) {
       return 'Pending Review';
@@ -439,6 +439,10 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
         return 'bg-blue-500/15 text-blue-400 border border-blue-500/30';
       case 'Passed':
         return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+      case 'PHASE 2 PENDING':
+        return 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse';
+      case 'FUNDED PENDING':
+        return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse';
       case 'Pending Review':
         return 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse';
       case 'Approved':
@@ -1477,31 +1481,42 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                   </div>
                 )}
 
-                {selectedAccount.status === 'phase2_pending' && (
-                  <div className="p-5 bg-amber-500/10 border-2 border-amber-500/40 rounded-3xl text-amber-200 text-xs leading-relaxed flex items-start gap-3.5 shadow-xl animate-fade-in">
-                    <Award className="w-6 h-6 flex-shrink-0 text-amber-400 mt-0.5 animate-bounce" />
-                    <div className="space-y-1">
-                      <strong className="block text-amber-100 font-bold uppercase tracking-wider text-sm">🎉 Phase 1 Passed! Phase 2 Activation Pending Admin Approval</strong>
-                      <p className="text-slate-300">
-                        Congratulations! You reached the Phase 1 profit target on Account #{selectedAccount.login || selectedAccount.id}.
-                      </p>
-                      <p className="text-amber-300 font-medium pt-1">
-                        Your Phase 2 activation is currently pending Admin review in the Admin Panel. Once approved, your Phase 2 account will be activated immediately!
+                {(selectedAccount.status === 'phase2_pending' || selectedAccount.status === 'PHASE2_PENDING') && (
+                  <div className="p-6 bg-gradient-to-r from-amber-950/40 via-amber-900/20 to-amber-950/40 border-2 border-amber-500/50 rounded-3xl text-amber-200 text-xs leading-relaxed flex items-start gap-4 shadow-2xl backdrop-blur-md animate-fade-in">
+                    <Award className="w-8 h-8 flex-shrink-0 text-amber-400 mt-0.5 animate-bounce" />
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 font-extrabold text-xs uppercase tracking-wider">
+                          🟡 PHASE 2 PENDING
+                        </span>
+                      </div>
+                      <h3 className="text-base font-extrabold text-amber-100 uppercase tracking-wide">
+                        Your account has successfully passed Phase 1.
+                      </h3>
+                      <p className="text-amber-200 font-medium text-sm">
+                        Please wait for admin review and activation.
                       </p>
                     </div>
                   </div>
                 )}
 
-                {selectedAccount.status === 'funded_pending' && (
-                  <div className="p-5 bg-emerald-500/10 border-2 border-emerald-500/40 rounded-3xl text-emerald-200 text-xs leading-relaxed flex items-start gap-3.5 shadow-xl animate-fade-in">
-                    <Award className="w-6 h-6 flex-shrink-0 text-emerald-400 mt-0.5 animate-bounce" />
-                    <div className="space-y-1">
-                      <strong className="block text-emerald-100 font-bold uppercase tracking-wider text-sm">🎉 Phase 2 Passed! Funded Account Pending Admin Approval</strong>
-                      <p className="text-slate-300">
-                        Outstanding performance! You completed Phase 2 on Account #{selectedAccount.login || selectedAccount.id}.
+                {(selectedAccount.status === 'funded_pending' || selectedAccount.status === 'FUNDED_PENDING') && (
+                  <div className="p-6 bg-gradient-to-r from-emerald-950/40 via-emerald-900/20 to-emerald-950/40 border-2 border-emerald-500/50 rounded-3xl text-emerald-200 text-xs leading-relaxed flex items-start gap-4 shadow-2xl backdrop-blur-md animate-fade-in">
+                    <Award className="w-8 h-8 flex-shrink-0 text-emerald-400 mt-0.5 animate-bounce" />
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-extrabold text-xs uppercase tracking-wider">
+                          🟢 FUNDED PENDING
+                        </span>
+                      </div>
+                      <h3 className="text-base font-extrabold text-emerald-100 uppercase tracking-wide">
+                        Congratulations!
+                      </h3>
+                      <p className="text-emerald-100 font-bold text-sm">
+                        Your account has successfully passed Phase 2.
                       </p>
-                      <p className="text-emerald-300 font-medium pt-1">
-                        Your account is pending final admin approval for Funded Account activation. Once approved by the admin team, your Funded Account and Payout section will unlock automatically!
+                      <p className="text-emerald-200 font-medium text-xs">
+                        Please wait for admin approval and funded account activation.
                       </p>
                     </div>
                   </div>

@@ -425,14 +425,21 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
   };
 
   const getActiveQrCode = () => {
+    let customQr = '';
     switch (cryptoMethod) {
-      case 'Bitcoin (BTC)': return walletAddresses.btcQrCode || '';
-      case 'USDT TRC20': return walletAddresses.usdtTrc20QrCode || '';
-      case 'USDT ERC20': return walletAddresses.usdtErc20QrCode || '';
-      case 'Litecoin (LTC)': return walletAddresses.ltcQrCode || '';
-      case 'UPI': return walletAddresses.upiQrCode || '';
-      default: return '';
+      case 'Bitcoin (BTC)': customQr = walletAddresses.btcQrCode || ''; break;
+      case 'USDT TRC20': customQr = walletAddresses.usdtTrc20QrCode || ''; break;
+      case 'USDT ERC20': customQr = walletAddresses.usdtErc20QrCode || ''; break;
+      case 'Litecoin (LTC)': customQr = walletAddresses.ltcQrCode || ''; break;
+      case 'UPI': customQr = walletAddresses.upiQrCode || ''; break;
     }
+    if (customQr) return customQr;
+
+    const address = getActiveWalletAddress();
+    if (address) {
+      return `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(address)}`;
+    }
+    return '';
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
