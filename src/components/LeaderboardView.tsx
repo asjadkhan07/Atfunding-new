@@ -3,9 +3,10 @@ import {
   Trophy, Search, Pin, ArrowUp, ArrowDown, Shield, DollarSign, 
   CheckCircle2, AlertTriangle, Sparkles, TrendingUp, Award, User, RefreshCw
 } from 'lucide-react';
-import { collection, onSnapshot, doc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, getDocs, query, limit } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { TradingAccount, UserProfile, PayoutRequest, LeaderboardEntry, LeaderboardOverride } from '../types';
+import { getDocsCached, getDocCached } from '../lib/firestoreCache';
 
 interface LeaderboardViewProps {
   isAdmin?: boolean;
@@ -45,54 +46,71 @@ export default function LeaderboardView({
     if (propPayouts) setPayouts(propPayouts);
   }, [propPayouts]);
 
-  // Subscribe to realtime accounts, users, payouts if not passed in props
+  // Fetch accounts, users, payouts & overrides with 60s cached polling
   useEffect(() => {
-    if (!propAccounts) {
-      const unsubAcc = onSnapshot(collection(db, 'accounts'), (snap) => {
-        const accs: TradingAccount[] = [];
-        snap.forEach(d => accs.push({ id: d.id, ...d.data() } as TradingAccount));
-        setAccounts(accs);
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'accounts'));
-      return () => unsubAcc();
-    }
-  }, [propAccounts]);
+    let timer: any = null;
 
-  useEffect(() => {
-    if (!propUsers) {
-      const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
-        const usrs: UserProfile[] = [];
-        snap.forEach(d => usrs.push({ uid: d.id, ...d.data() } as UserProfile));
-        setUsers(usrs);
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'users'));
-      return () => unsubUsers();
-    }
-  }, [propUsers]);
-
-  useEffect(() => {
-    if (!propPayouts) {
-      const unsubPayouts = onSnapshot(collection(db, 'payouts'), (snap) => {
-        const py: PayoutRequest[] = [];
-        snap.forEach(d => py.push({ id: d.id, ...d.data() } as PayoutRequest));
-        setPayouts(py);
-      }, (err) => handleFirestoreError(err, OperationType.GET, 'payouts'));
-      return () => unsubPayouts();
-    }
-  }, [propPayouts]);
-
-  // Subscribe to leaderboard overrides in Firestore
-  useEffect(() => {
-    const unsubOverrides = onSnapshot(doc(db, 'settings', 'leaderboard_overrides'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.overrides) setOverrides(data.overrides || {});
-        if (data.pinnedUsers) setPinnedUsers(data.pinnedUsers || []);
-        if (data.customOrderMap) setCustomOrderMap(data.customOrderMap || {});
+    const fetchLeaderboardData = async () => {
+      if (!propAccounts) {
+        try {
+          const accs = await getDocsCached<TradingAccount>('leaderboard_accounts', async () => {
+            const snap = await getDocs(query(collection(db, 'accounts'), limit(100)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as TradingAccount));
+          }, 60000, false, 'LeaderboardView');
+          setAccounts(accs);
+        } catch (e) {
+          console.warn("Leaderboard accounts fetch error:", e);
+        }
       }
-    }, (err) => {
-      console.warn("Leaderboard overrides subscription error:", err);
-    });
-    return () => unsubOverrides();
-  }, []);
+
+      if (!propUsers) {
+        try {
+          const usrs = await getDocsCached<UserProfile>('leaderboard_users', async () => {
+            const snap = await getDocs(query(collection(db, 'users'), limit(100)));
+            return snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile));
+          }, 60000, false, 'LeaderboardView');
+          setUsers(usrs);
+        } catch (e) {
+          console.warn("Leaderboard users fetch error:", e);
+        }
+      }
+
+      if (!propPayouts) {
+        try {
+          const py = await getDocsCached<PayoutRequest>('leaderboard_payouts', async () => {
+            const snap = await getDocs(query(collection(db, 'payouts'), limit(100)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as PayoutRequest));
+          }, 60000, false, 'LeaderboardView');
+          setPayouts(py);
+        } catch (e) {
+          console.warn("Leaderboard payouts fetch error:", e);
+        }
+      }
+
+      try {
+        const overridesDoc = await getDocCached('leaderboard_overrides', async () => {
+          const snap = await getDoc(doc(db, 'settings', 'leaderboard_overrides'));
+          return snap.exists() ? snap.data() : null;
+        }, 60000, false, 'LeaderboardView');
+
+        if (overridesDoc) {
+          if (overridesDoc.overrides) setOverrides(overridesDoc.overrides || {});
+          if (overridesDoc.pinnedUsers) setPinnedUsers(overridesDoc.pinnedUsers || []);
+          if (overridesDoc.customOrderMap) setCustomOrderMap(overridesDoc.customOrderMap || {});
+        }
+      } catch (e) {
+        console.warn("Leaderboard overrides fetch error:", e);
+      }
+    };
+
+    fetchLeaderboardData();
+    // Refresh every 60 seconds
+    timer = setInterval(fetchLeaderboardData, 60000);
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [propAccounts, propUsers, propPayouts]);
 
   // Compute dynamic leaderboard entries
   const computeLeaderboard = (): LeaderboardEntry[] => {

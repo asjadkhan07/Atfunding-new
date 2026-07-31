@@ -12,7 +12,8 @@ import { CHALLENGE_PACKAGES, getAccountDrawdownLimits } from '../constants';
 import { db, auth } from '../firebase';
 import { firebaseTelemetry } from '../firebaseTelemetry';
 import { updatePassword } from 'firebase/auth';
-import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, where, limit } from 'firebase/firestore';
+import { getDocsCached, getDocCached } from '../lib/firestoreCache';
 import EmailCenter from './EmailCenter';
 import AdminCertificateManager from './AdminCertificateManager';
 import LeaderboardView from './LeaderboardView';
@@ -529,417 +530,159 @@ export default function AdminPanel() {
   const [manualActionMsg, setManualActionMsg] = useState<string>('');
   const [isQuotaExceeded, setIsQuotaExceeded] = useState<boolean>(false);
 
+  // Efficient 60-second cached data fetcher for Admin Panel (Visible Data Only)
   useEffect(() => {
+    let isMounted = true;
     setIsLoading(true);
 
-    // 1. Users snapshot
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      firebaseTelemetry.incrementReads(snapshot.size || 1);
-      const list: UserProfile[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as UserProfile));
-      setUsers(list);
-      setIsLoading(false);
-    }, (err) => {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
-        setIsQuotaExceeded(true);
+    const loadAdminData = async () => {
+      // Always load core settings with 10-min cache
+      try {
+        const genSettings = await getDocCached('admin_settings_general', async () => {
+          const snap = await getDoc(doc(db, 'settings', 'general'));
+          return snap.exists() ? snap.data() : null;
+        }, 10 * 60 * 1000, false, 'AdminPanel');
+        if (genSettings && isMounted) {
+          setAdminEmailInput(genSettings.adminEmail || 'ATgrowfund@gmail.com');
+          setSupportEmailInput(genSettings.supportEmail || 'atfundingsupport@gmail.com');
+          setFacebookLinkInput(genSettings.facebookLink || '');
+          setInstagramLinkInput(genSettings.instagramLink || '');
+          setTelegramLinkInput(genSettings.telegramLink || '');
+        }
+      } catch (e) {}
+
+      // Tab specific visible data fetching with 60s cache
+      try {
+        if (['stats', 'users', 'search', 'kyc_verification'].includes(activeTab) || users.length === 0) {
+          const uList = await getDocsCached<UserProfile>('admin_users', async () => {
+            const snap = await getDocs(query(collection(db, 'users'), limit(50)));
+            return snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setUsers(uList);
+        }
+
+        if (['stats', 'accounts', 'active_accounts', 'challenge_reviews'].includes(activeTab) || accounts.length === 0) {
+          const aList = await getDocsCached<TradingAccount>('admin_accounts', async () => {
+            const snap = await getDocs(query(collection(db, 'accounts'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as TradingAccount));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setAccounts(aList);
+        }
+
+        if (['stats', 'payouts'].includes(activeTab) || payouts.length === 0) {
+          const pList = await getDocsCached<PayoutRequest>('admin_payouts', async () => {
+            const snap = await getDocs(query(collection(db, 'payouts'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as PayoutRequest));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setPayouts(pList);
+        }
+
+        if (['referral_withdrawals'].includes(activeTab)) {
+          const rList = await getDocsCached<ReferralWithdrawal>('admin_ref_withdrawals', async () => {
+            const snap = await getDocs(query(collection(db, 'referral_withdrawals'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() as ReferralWithdrawal }));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setReferralWithdrawals(rList);
+        }
+
+        if (['coupons'].includes(activeTab)) {
+          const cList = await getDocsCached<Coupon>('admin_coupons', async () => {
+            const snap = await getDocs(query(collection(db, 'coupons'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as Coupon));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setCoupons(cList);
+        }
+
+        if (['trades'].includes(activeTab)) {
+          const tList = await getDocsCached<Trade>('admin_trades', async () => {
+            const snap = await getDocs(query(collection(db, 'trades'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as Trade));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setTrades(tList);
+        }
+
+        if (['stats', 'orders'].includes(activeTab)) {
+          const oList = await getDocsCached<Order>('admin_orders', async () => {
+            const snap = await getDocs(query(collection(db, 'orders'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as unknown as Order));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setOrders(oList);
+        }
+
+        if (['rule_violations'].includes(activeTab)) {
+          const rvList = await getDocsCached('admin_rule_violations', async () => {
+            const snap = await getDocs(query(collection(db, 'ruleViolations'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setRuleViolations(rvList);
+
+          const brList = await getDocsCached('admin_breaches', async () => {
+            const snap = await getDocs(query(collection(db, 'breaches'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setBreaches(brList);
+        }
+
+        if (['support_tickets'].includes(activeTab)) {
+          const stList = await getDocsCached<SupportTicket>('admin_support_tickets', async () => {
+            const snap = await getDocs(query(collection(db, 'supportTickets'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setSupportTickets(stList);
+        }
+
+        if (['announcements'].includes(activeTab)) {
+          const anList = await getDocsCached<Announcement>('admin_announcements', async () => {
+            const snap = await getDocs(query(collection(db, 'announcements'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setAnnouncements(anList);
+        }
+
+        if (['tasks_rewards'].includes(activeTab)) {
+          const tkList = await getDocsCached<Task>('admin_tasks', async () => {
+            const snap = await getDocs(query(collection(db, 'tasks'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as Task));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setTasks(tkList);
+
+          const tsList = await getDocsCached<TaskSubmission>('admin_task_submissions', async () => {
+            const snap = await getDocs(query(collection(db, 'task_submissions'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as TaskSubmission));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setTaskSubmissions(tsList);
+
+          const rsList = await getDocsCached<RewardStoreItem>('admin_reward_store', async () => {
+            const snap = await getDocs(query(collection(db, 'reward_store'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as RewardStoreItem));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setRewardStoreItems(rsList);
+
+          const rrList = await getDocsCached<RewardRedemption>('admin_reward_redemptions', async () => {
+            const snap = await getDocs(query(collection(db, 'reward_redemptions'), limit(50)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() } as RewardRedemption));
+          }, 60000, false, 'AdminPanel');
+          if (isMounted) setRewardRedemptions(rrList);
+        }
+
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded')) {
+          setIsQuotaExceeded(true);
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
-      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted') || errMsg.toLowerCase().includes('offline')) {
-        console.warn("Realtime Users Subscription Notice:", errMsg);
-      } else {
-        console.error("Realtime Users Error:", err);
-      }
-      setIsLoading(false);
-    });
+    };
 
-    // BOGO Mappings snapshot
-    const unsubBogo = onSnapshot(doc(db, 'settings', 'bogo_mappings'), (snapshot) => {
-      if (snapshot.exists()) {
-        setBogoMappings(snapshot.data().mappings || {});
-      } else {
-        setBogoMappings({});
-      }
-    }, (err) => {
-      console.warn("BOGO mappings subscription error:", err);
-    });
-
-    // Package Configs snapshot
-    const unsubPackages = onSnapshot(doc(db, 'settings', 'packages'), (snapshot) => {
-      if (snapshot.exists()) {
-        setPackagesConfig(snapshot.data() as any);
-      } else {
-        setPackagesConfig({});
-      }
-    }, (err) => {
-      console.warn("Packages Config subscription error:", err);
-    });
-
-    // Waitlist snapshot
-    const unsubInterestedUsers = onSnapshot(collection(db, 'availability_waitlist'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setInterestedUsers(list);
-    }, (err) => {
-      console.warn("Interested users subscription error:", err);
-    });
-
-    // 2. Accounts snapshot
-    const unsubAccounts = onSnapshot(collection(db, 'accounts'), (snapshot) => {
-      firebaseTelemetry.incrementReads(snapshot.size || 1);
-      const list: TradingAccount[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as TradingAccount));
-      setAccounts(list);
-    }, (err) => {
-      console.warn("Realtime Accounts Subscription Error:", err);
-    });
-
-    // 3. Payouts snapshot
-    const unsubPayouts = onSnapshot(collection(db, 'payouts'), (snapshot) => {
-      firebaseTelemetry.incrementReads(snapshot.size || 1);
-      const list: PayoutRequest[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as PayoutRequest));
-      setPayouts(list);
-    }, (err) => {
-      console.warn("Realtime Payouts Subscription Error:", err);
-    });
-
-    // 3b. Referral Withdrawals snapshot
-    const unsubRefWithdrawals = onSnapshot(collection(db, 'referral_withdrawals'), (snapshot) => {
-      const list: ReferralWithdrawal[] = [];
-      snapshot.forEach((doc) => list.push({ id: doc.id, ...doc.data() as ReferralWithdrawal }));
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setReferralWithdrawals(list);
-    }, (err) => {
-      console.warn("Realtime Referral Withdrawals Subscription Error:", err);
-    });
-
-    // 4. Coupons snapshot
-    const unsubCoupons = onSnapshot(collection(db, 'coupons'), (snapshot) => {
-      firebaseTelemetry.incrementReads(snapshot.size || 1);
-      const list: Coupon[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as Coupon));
-      setCoupons(list);
-    }, (err) => {
-      console.warn("Realtime Coupons Subscription Error:", err);
-    });
-
-    // 5. Trades snapshot
-    const unsubTrades = onSnapshot(collection(db, 'trades'), (snapshot) => {
-      firebaseTelemetry.incrementReads(snapshot.size || 1);
-      const list: Trade[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as Trade));
-      setTrades(list);
-    }, (err) => {
-      console.warn("Realtime Trades Subscription Error:", err);
-    });
-
-    // 6. Orders snapshot
-    const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
-      const list: Order[] = [];
-      snapshot.forEach((doc) => list.push(doc.data() as Order));
-      setOrders(list);
-    }, (err) => {
-      console.warn("Realtime Orders Subscription Error:", err);
-    });
-
-    // 7. Violations snapshot
-    const unsubViolations = onSnapshot(collection(db, 'ruleViolations'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
-      setRuleViolations(list.sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
-    }, (err) => {
-      console.warn("Realtime Rule Violations Subscription Error:", err);
-    });
-
-    // 8. Breaches snapshot
-    const unsubBreaches = onSnapshot(collection(db, 'breaches'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
-      setBreaches(list);
-    }, (err) => {
-      console.warn("Realtime Breaches Subscription Error:", err);
-    });
-
-    // 9. Payment settings snapshot
-    const unsubPaymentSettings = onSnapshot(doc(db, 'settings', 'payment'), (docSnap) => {
-      if (docSnap.exists()) {
-        const d = docSnap.data();
-        setBtcAddressInput(d.btcAddress || '');
-        setUsdtTrc20AddressInput(d.usdtTrc20Address || '');
-        setUsdtErc20AddressInput(d.usdtErc20Address || '');
-        setLtcAddressInput(d.ltcAddress || '');
-        setUpiIdInput(d.upiId || '');
-        setUpiQrCodeInput(d.upiQrCode || '');
-        setBtcQrCodeInput(d.btcQrCode || '');
-        setUsdtTrc20QrCodeInput(d.usdtTrc20QrCode || '');
-        setUsdtErc20QrCodeInput(d.usdtErc20QrCode || '');
-        setLtcQrCodeInput(d.ltcQrCode || '');
-      }
-    }, (err) => {
-      console.warn("Realtime Payment Settings Subscription Error:", err);
-    });
-
-    // 10. Rule settings snapshot
-    const unsubRuleSettings = onSnapshot(doc(db, 'settings', 'rules'), (rulesSnap) => {
-      if (rulesSnap.exists()) {
-        const r = rulesSnap.data();
-        setOneStepDailyLoss(r.oneStepDailyLoss ?? 4);
-        setOneStepMaxLoss(r.oneStepMaxLoss ?? 8);
-        setOneStepProfitTarget(r.oneStepProfitTarget ?? 10);
-        setOneStepMinDays(r.oneStepMinDays ?? 0);
-        setOneStepTenMinuteRule(r.oneStepTenMinuteRule ?? true);
-
-        setTwoStepDailyLoss(r.twoStepDailyLoss ?? 5);
-        setTwoStepMaxLoss(r.twoStepMaxLoss ?? 10);
-        setTwoStepPhase1Target(r.twoStepPhase1Target ?? 8);
-        setTwoStepPhase2Target(r.twoStepPhase2Target ?? 5);
-        setTwoStepMinDays(r.twoStepMinDays ?? 0);
-        setTwoStepTenMinuteRule(r.twoStepTenMinuteRule ?? true);
-
-        setPayoutLaterDailyLoss(r.payoutLaterDailyLoss ?? 3);
-        setPayoutLaterMaxLoss(r.payoutLaterMaxLoss ?? 6);
-        setPayoutLaterMinDays(r.payoutLaterMinDays ?? 5);
-        setPayoutLaterTenMinuteRule(r.payoutLaterTenMinuteRule ?? true);
-      }
-    }, (err) => {
-      console.warn("Realtime Rule Settings Subscription Error:", err);
-    });
-
-    // 11. General settings snapshot
-    const unsubGeneralSettings = onSnapshot(doc(db, 'settings', 'general'), (docSnap) => {
-      if (docSnap.exists()) {
-        const d = docSnap.data();
-        setAdminEmailInput(d.adminEmail || 'ATgrowfund@gmail.com');
-        setSupportEmailInput(d.supportEmail || 'atfundingsupport@gmail.com');
-        setFacebookLinkInput(d.facebookLink || 'https://www.facebook.com/share/1MUjNkYEyF/');
-        setInstagramLinkInput(d.instagramLink || 'https://www.instagram.com/atfunding_?igsh=MTJwcnNrMTZ2NGppZg==');
-        setTelegramLinkInput(d.telegramLink || 'https://t.me/httpsAsjadTrades');
-      }
-    }, (err) => {
-      console.warn("Realtime General Settings Subscription Error:", err);
-    });
-
-    // 12. CMS pages snapshot
-    const unsubCms = onSnapshot(collection(db, 'cms_pages'), (snapshot) => {
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (doc.id === 'terms_of_service') setCmsTerms(data.content || '');
-        else if (doc.id === 'privacy_policy') setCmsPrivacy(data.content || '');
-        else if (doc.id === 'refund_policy') setCmsRefund(data.content || '');
-        else if (doc.id === 'risk_disclosure') setCmsRisk(data.content || '');
-      });
-    }, (err) => {
-      console.warn("Realtime CMS Pages Subscription Error:", err);
-    });
-
-    // 13. Social Links snapshot
-    const unsubSocial = onSnapshot(collection(db, 'socialLinks'), (snapshot) => {
-      const list: SocialLink[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() as any });
-      });
-      list.sort((a, b) => a.sortOrder - b.sortOrder);
-      setSocialLinks(list);
-    }, (err) => {
-      console.warn("Realtime Social Links Subscription Error:", err);
-    });
-
-    // 14. Payment Methods snapshot
-    const unsubPaymentMethods = onSnapshot(collection(db, 'paymentMethods'), (snapshot) => {
-      const list: PaymentMethod[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() as any });
-      });
-      setPaymentMethods(list);
-    }, (err) => {
-      console.warn("Realtime Payment Methods Subscription Error:", err);
-    });
-
-    // 15. Support Tickets snapshot
-    const unsubTickets = onSnapshot(collection(db, 'supportTickets'), (snapshot) => {
-      const list: SupportTicket[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() as any });
-      });
-      // Sort by updatedAt descending
-      list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      setSupportTickets(list);
-    }, (err) => {
-      console.warn("Realtime Support Tickets Subscription Error:", err);
-    });
-
-    // 16. Announcements snapshot
-    const unsubAnnouncements = onSnapshot(collection(db, 'announcements'), (snapshot) => {
-      const list: Announcement[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() as any });
-      });
-      list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      setAnnouncements(list);
-    }, (err) => {
-      console.warn("Realtime Announcements Subscription Error:", err);
-    });
-
-    // 17. Realtime FAQs snapshot
-    const unsubFaqs = onSnapshot(collection(db, 'faqs'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      list.sort((a, b) => (a.order || 0) - (b.order || 0));
-      setFaqsList(list);
-    }, (err) => {
-      console.warn("Realtime FAQs Subscription Error:", err);
-    });
-
-    // 18. Realtime Challenge Rules snapshot
-    const unsubRules = onSnapshot(collection(db, 'challenge_rules'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      setChallengeRulesList(list);
-    }, (err) => {
-      console.warn("Realtime Challenge Rules Subscription Error:", err);
-    });
-
-    // 19. Realtime How It Works snapshot
-    const unsubHowItWorks = onSnapshot(collection(db, 'how_it_works'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      list.sort((a, b) => (a.stepNumber || 1) - (b.stepNumber || 1));
-      setHowItWorksList(list);
-    }, (err) => {
-      console.warn("Realtime How It Works Subscription Error:", err);
-    });
-
-    // 20. Realtime Why Choose snapshot
-    const unsubWhyChoose = onSnapshot(collection(db, 'why_choose'), (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() });
-      });
-      setWhyChooseList(list);
-    }, (err) => {
-      console.warn("Realtime Why Choose Subscription Error:", err);
-    });
-
-    // 21. Realtime Tasks
-    const unsubTasks = onSnapshot(collection(db, 'tasks'), (snapshot) => {
-      const list: Task[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as Task);
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setTasks(list);
-    }, (err) => {
-      console.warn("Tasks subscription error:", err);
-    });
-
-    // 22. Realtime Task Submissions
-    const unsubSubmissions = onSnapshot(collection(db, 'task_submissions'), (snapshot) => {
-      const list: TaskSubmission[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as TaskSubmission);
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setTaskSubmissions(list);
-    }, (err) => {
-      console.warn("Task submissions subscription error:", err);
-    });
-
-    // 23. Realtime Reward Store
-    const unsubRewardStore = onSnapshot(collection(db, 'reward_store'), (snapshot) => {
-      const list: RewardStoreItem[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as RewardStoreItem);
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setRewardStoreItems(list);
-    }, (err) => {
-      console.warn("Reward store subscription error:", err);
-    });
-
-    // 24. Realtime Reward Redemptions
-    const unsubRedemptions = onSnapshot(collection(db, 'reward_redemptions'), (snapshot) => {
-      const list: RewardRedemption[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as RewardRedemption);
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setRewardRedemptions(list);
-    }, (err) => {
-      console.warn("Reward redemptions subscription error:", err);
-    });
-
-    // 25. Realtime Custom Links
-    const unsubCustomLinks = onSnapshot(collection(db, 'custom_links'), (snapshot) => {
-      const list: CustomLink[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as CustomLink);
-      });
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setCustomLinks(list);
-    }, (err) => {
-      console.warn("Custom links subscription error:", err);
-    });
-
-    // 26. Realtime Certificates
-    const unsubCertificates = onSnapshot(collection(db, 'certificates'), (snapshot) => {
-      const list: Certificate[] = [];
-      snapshot.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() } as Certificate);
-      });
-      list.sort((a, b) => new Date(b.createdAt || b.issueDate || 0).getTime() - new Date(a.createdAt || a.issueDate || 0).getTime());
-      setCertificates(list);
-    }, (err) => {
-      console.warn("Realtime certificates subscription error:", err);
-    });
-
-    // 27. Realtime Certificate Template
-    const unsubCertTemplate = onSnapshot(doc(db, 'settings', 'certificate_template'), (docSnap) => {
-      if (docSnap.exists()) {
-        setCertTemplate(prev => ({ ...prev, ...docSnap.data() }));
-      }
-    }, (err) => {
-      console.warn("Realtime certificate template subscription error:", err);
-    });
+    loadAdminData();
+    const timer = setInterval(loadAdminData, 60000);
 
     return () => {
-      unsubUsers();
-      unsubAccounts();
-      unsubPayouts();
-      unsubCoupons();
-      unsubTrades();
-      unsubOrders();
-      unsubViolations();
-      unsubBreaches();
-      unsubPaymentSettings();
-      unsubRuleSettings();
-      unsubGeneralSettings();
-      unsubCms();
-      unsubSocial();
-      unsubPaymentMethods();
-      unsubTickets();
-      unsubAnnouncements();
-      unsubCertificates();
-      unsubCertTemplate();
-      unsubFaqs();
-      unsubRules();
-      unsubHowItWorks();
-      unsubWhyChoose();
-      unsubTasks();
-      unsubSubmissions();
-      unsubRewardStore();
-      unsubRedemptions();
-      unsubCustomLinks();
+      isMounted = false;
+      clearInterval(timer);
     };
-  }, []);
+  }, [activeTab]);
 
   // Sync selected challenge rule into form states
   useEffect(() => {

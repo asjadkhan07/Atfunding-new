@@ -12,7 +12,7 @@ import { db, auth, handleFirestoreError, OperationType, storage } from '../fireb
 import { firebaseTelemetry } from '../firebaseTelemetry';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc, onSnapshot, getDoc, limit } from 'firebase/firestore';
-import { getDocsCached } from '../lib/firestoreCache';
+import { getDocsCached, getDocCached } from '../lib/firestoreCache';
 import { ensureUserAffiliateCode, getOfficialAffiliateLink } from '../utils/affiliateManager';
 
 // Subcomponents
@@ -74,92 +74,115 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   const docBackInputRef = useRef<HTMLInputElement>(null);
   const selfieInputRef = useRef<HTMLInputElement>(null);
 
-  // Subscription for KYC Updates, Coins & XP in real-time
+  // Cached User Profile / KYC Data (5-minute TTL)
   useEffect(() => {
-    const userRef = doc(db, 'users', user.uid);
-    const unsubscribe = onSnapshot(userRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setLocalKycStatus(data.kycStatus || 'unverified');
-        setLocalKycDocs(data.kycDocuments || {});
-        setLocalCoins(data.coins || 0);
-        setLocalXP(data.xp || 0);
+    if (!user?.uid) return;
+    let isMounted = true;
+
+    const fetchUserProfileData = async () => {
+      try {
+        const data = await getDocCached<any>(`user_profile_${user.uid}`, async () => {
+          const snap = await getDoc(doc(db, 'users', user.uid));
+          return snap.exists() ? snap.data() : null;
+        }, 5 * 60 * 1000, false, 'TraderDashboard');
+
+        if (data && isMounted) {
+          setLocalKycStatus(data.kycStatus || 'unverified');
+          setLocalKycDocs(data.kycDocuments || {});
+          setLocalCoins(data.coins || 0);
+          setLocalXP(data.xp || 0);
+        }
+      } catch (e) {
+        console.warn("Error fetching user profile cache:", e);
       }
-    });
-    return () => unsubscribe();
+    };
+
+    fetchUserProfileData();
+    const timer = setInterval(fetchUserProfileData, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
   }, [user.uid]);
 
-  // Real-time onSnapshot listeners for EARN system collections
+  // EARN system collections (60-second cached polling)
   useEffect(() => {
-    if (!user.uid) return;
+    if (!user?.uid) return;
+    let isMounted = true;
 
-    // 1. Tasks
-    getDocsCached('trader_tasks', async () => {
-      const snap = await getDocs(query(collection(db, 'tasks'), limit(50)));
-      return snap.docs.map(d => d.data());
-    }).then(res => setTasks(res)).catch(e => console.warn(e));
+    const fetchEarnData = async () => {
+      // 1. Tasks
+      try {
+        const tasksData = await getDocsCached('trader_tasks', async () => {
+          const snap = await getDocs(query(collection(db, 'tasks'), limit(50)));
+          return snap.docs.map(d => d.data());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setTasks(tasksData);
+      } catch (e) { console.warn(e); }
 
-    // 2. Submissions
-    const unsubSubmissions = onSnapshot(
-      query(collection(db, 'task_submissions'), where('userId', '==', user.uid)),
-      (snap) => {
-        const list: any[] = [];
-        snap.forEach(d => list.push(d.data()));
-        setMySubmissions(list);
-      }
-    );
+      // 2. Submissions
+      try {
+        const subData = await getDocsCached(`my_submissions_${user.uid}`, async () => {
+          const snap = await getDocs(query(collection(db, 'task_submissions'), where('userId', '==', user.uid), limit(50)));
+          return snap.docs.map(d => d.data());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setMySubmissions(subData);
+      } catch (e) { console.warn(e); }
 
-    // 3. Reward Store Builder listings
-    getDocsCached('trader_reward_store', async () => {
-      const snap = await getDocs(query(collection(db, 'reward_store'), limit(50)));
-      return snap.docs.map(d => d.data());
-    }).then(res => setRewardStore(res)).catch(e => console.warn(e));
+      // 3. Reward Store
+      try {
+        const storeData = await getDocsCached('trader_reward_store', async () => {
+          const snap = await getDocs(query(collection(db, 'reward_store'), limit(50)));
+          return snap.docs.map(d => d.data());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setRewardStore(storeData);
+      } catch (e) { console.warn(e); }
 
-    // 4. Redemptions Hub Claims
-    const unsubRedemptions = onSnapshot(
-      query(collection(db, 'reward_redemptions'), where('userId', '==', user.uid)),
-      (snap) => {
-        const list: any[] = [];
-        snap.forEach(d => list.push(d.data()));
-        setMyRedemptions(list);
-      }
-    );
+      // 4. Redemptions
+      try {
+        const redData = await getDocsCached(`my_redemptions_${user.uid}`, async () => {
+          const snap = await getDocs(query(collection(db, 'reward_redemptions'), where('userId', '==', user.uid), limit(50)));
+          return snap.docs.map(d => d.data());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setMyRedemptions(redData);
+      } catch (e) { console.warn(e); }
 
-    // 5. Custom platform social links
-    getDocsCached('trader_custom_links', async () => {
-      const snap = await getDocs(query(collection(db, 'custom_links'), limit(50)));
-      return snap.docs.map(d => d.data());
-    }).then(res => setCustomLinks(res)).catch(e => console.warn(e));
+      // 5. Custom links
+      try {
+        const linksData = await getDocsCached('trader_custom_links', async () => {
+          const snap = await getDocs(query(collection(db, 'custom_links'), limit(50)));
+          return snap.docs.map(d => d.data());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setCustomLinks(linksData);
+      } catch (e) { console.warn(e); }
 
-    // 6. Coin transactions history logs
-    const unsubCoins = onSnapshot(
-      query(collection(db, 'coins'), where('userId', '==', user.uid)),
-      (snap) => {
-        const list: any[] = [];
-        snap.forEach(d => list.push(d.data()));
-        // sort by newest
-        list.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
-        setCoinLedger(list);
-      }
-    );
+      // 6. Coin transactions
+      try {
+        const coinData = await getDocsCached(`my_coins_${user.uid}`, async () => {
+          const snap = await getDocs(query(collection(db, 'coins'), where('userId', '==', user.uid), limit(50)));
+          const list = snap.docs.map(d => d.data());
+          return list.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setCoinLedger(coinData);
+      } catch (e) { console.warn(e); }
 
-    // 7. XP level experience points logs
-    const unsubXP = onSnapshot(
-      query(collection(db, 'xp_history'), where('userId', '==', user.uid)),
-      (snap) => {
-        const list: any[] = [];
-        snap.forEach(d => list.push(d.data()));
-        // sort by newest
-        list.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
-        setXpLedger(list);
-      }
-    );
+      // 7. XP level experience points
+      try {
+        const xpData = await getDocsCached(`my_xp_${user.uid}`, async () => {
+          const snap = await getDocs(query(collection(db, 'xp_history'), where('userId', '==', user.uid), limit(50)));
+          const list = snap.docs.map(d => d.data());
+          return list.sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setXpLedger(xpData);
+      } catch (e) { console.warn(e); }
+    };
+
+    fetchEarnData();
+    const timer = setInterval(fetchEarnData, 60000);
 
     return () => {
-      unsubSubmissions();
-      unsubRedemptions();
-      unsubCoins();
-      unsubXP();
+      isMounted = false;
+      clearInterval(timer);
     };
   }, [user.uid]);
 
@@ -809,85 +832,72 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       myCodeKeysSet.add(k.toLowerCase());
       myCodeKeysSet.add(k.toUpperCase());
     });
-    const myCodes = Array.from(myCodeKeysSet);
+    const myCodes = Array.from(myCodeKeysSet)    // 1. Fetch referral stats, referred users, and orders (60-second polling)
+    let isMounted = true;
 
-    // 1. Listen to link clicks / taps
-    const unsubStatsList: (() => void)[] = [];
-    let combinedClicks = 0;
-    
-    myCodes.forEach((codeKey) => {
-      const unsub = onSnapshot(doc(db, 'referral_stats', codeKey), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if ((data.clicks || 0) > combinedClicks) {
-            combinedClicks = data.clicks;
-            setTotalTaps(combinedClicks);
+    const fetchReferralStats = async () => {
+      let combinedClicks = 0;
+      for (const codeKey of myCodes.slice(0, 4)) {
+        try {
+          const refDoc = await getDocCached(`ref_stat_${codeKey}`, async () => {
+            const snap = await getDoc(doc(db, 'referral_stats', codeKey));
+            return snap.exists() ? snap.data() : null;
+          }, 60000, false, 'TraderDashboard');
+          if (refDoc && (refDoc.clicks || 0) > combinedClicks) {
+            combinedClicks = refDoc.clicks;
           }
-        }
-      }, err => console.warn("Error listening to referral_stats:", err));
-      unsubStatsList.push(unsub);
+        } catch (e) {}
+      }
+      if (isMounted) setTotalTaps(combinedClicks);
 
-      const unsubAff = onSnapshot(doc(db, 'affiliates', codeKey), (snapshot) => {
-        if (snapshot.exists()) {
-          const data = snapshot.data();
-          if ((data.clicks || 0) > combinedClicks) {
-            combinedClicks = data.clicks;
-            setTotalTaps(combinedClicks);
-          }
-        }
-      }, err => console.warn("Error listening to affiliates:", err));
-      unsubStatsList.push(unsub);
-    });
+      // Referred Users
+      const userMap = new Map<string, any>();
+      for (const codeKey of myCodes.slice(0, 4)) {
+        try {
+          const list = await getDocsCached(`referred_users_${codeKey}`, async () => {
+            const snap = await getDocs(query(collection(db, 'users'), where('referredBy', '==', codeKey), limit(20)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }, 60000, false, 'TraderDashboard');
+          list.forEach((u: any) => {
+            if (u.id !== user.uid) userMap.set(u.id, u);
+          });
+        } catch (e) {}
+      }
+      if (isMounted) {
+        const sorted = Array.from(userMap.values()).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setReferredUsersList(sorted);
+        setTotalReferrals(sorted.length);
+      }
 
-    // 2. Real-time listener for users referred by this user's affiliate keys
-    const unsubUsersList: (() => void)[] = [];
-    const userMap = new Map<string, any>();
-    const referredUserIdsSet = new Set<string>();
-
-    myCodes.slice(0, 8).forEach((codeKey) => {
-      const q = query(collection(db, 'users'), where('referredBy', '==', codeKey));
-      const unsub = onSnapshot(q, (snapshot) => {
-        snapshot.forEach((docSnap) => {
-          if (docSnap.id === user.uid) return;
-          userMap.set(docSnap.id, { id: docSnap.id, ...docSnap.data() });
-          referredUserIdsSet.add(docSnap.id);
-        });
-        const list = Array.from(userMap.values());
-        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        setReferredUsersList(list);
-        setTotalReferrals(list.length);
-      }, err => console.warn("Error listening to referred users:", err));
-      unsubUsersList.push(unsub);
-    });
-
-    // 3. Real-time listener for approved orders referred by this user
-    const unsubOrdersList: (() => void)[] = [];
-    const orderMap = new Map<string, number>();
-
-    myCodes.slice(0, 8).forEach((codeKey) => {
-      const ordersQuery = query(
-        collection(db, 'orders'),
-        where('referredBy', '==', codeKey)
-      );
-      const unsub = onSnapshot(ordersQuery, (ordersSnapshot) => {
-        ordersSnapshot.forEach((docSnap) => {
-          const orderData = docSnap.data();
-          if (orderData.status === 'Approved') {
-            orderMap.set(docSnap.id, Number(orderData.finalPrice) || Number(orderData.price) || 0);
-          }
-        });
+      // Referred Orders
+      const orderMap = new Map<string, number>();
+      for (const codeKey of myCodes.slice(0, 4)) {
+        try {
+          const list = await getDocsCached(`referred_orders_${codeKey}`, async () => {
+            const snap = await getDocs(query(collection(db, 'orders'), where('referredBy', '==', codeKey), limit(20)));
+            return snap.docs.map(d => d.data());
+          }, 60000, false, 'TraderDashboard');
+          list.forEach((o: any) => {
+            if (o.status === 'Approved') {
+              orderMap.set(o.id || Math.random().toString(), Number(o.finalPrice) || Number(o.price) || 0);
+            }
+          });
+        } catch (e) {}
+      }
+      if (isMounted) {
         let sum = 0;
-        orderMap.forEach((price) => sum += price);
+        orderMap.forEach(price => sum += price);
         setTotalSales(sum);
         setTotalEarnings(sum * 0.15);
-      }, err => console.warn("Error listening to referred orders:", err));
-      unsubOrdersList.push(unsub);
-    });
+      }
+    };
+
+    fetchReferralStats();
+    const timer = setInterval(fetchReferralStats, 60000);
 
     return () => {
-      unsubStatsList.forEach(u => u());
-      unsubUsersList.forEach(u => u());
-      unsubOrdersList.forEach(u => u());
+      isMounted = false;
+      clearInterval(timer);
     };
   }, [user?.uid, user?.affiliateCode, affiliate?.code]);
 
@@ -903,50 +913,52 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
 
   useEffect(() => {
     if (!user?.uid) return;
-    const q = query(collection(db, 'referral_withdrawals'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list: ReferralWithdrawal[] = [];
-      snapshot.forEach(d => list.push({ id: d.id, ...d.data() as ReferralWithdrawal }));
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      setMyRefWithdrawals(list);
-    }, err => console.warn("Error loading ref withdrawals:", err));
-    return () => unsub();
+    let isMounted = true;
+
+    const fetchRefWithdrawals = async () => {
+      try {
+        const list = await getDocsCached(`my_ref_withdrawals_${user.uid}`, async () => {
+          const snap = await getDocs(query(collection(db, 'referral_withdrawals'), where('userId', '==', user.uid), limit(20)));
+          return snap.docs.map(d => ({ id: d.id, ...d.data() as ReferralWithdrawal }));
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) {
+          const sorted = list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+          setMyRefWithdrawals(sorted);
+        }
+      } catch (err) { console.warn("Error loading ref withdrawals:", err); }
+    };
+
+    fetchRefWithdrawals();
+    const timer = setInterval(fetchRefWithdrawals, 60000);
+    return () => { isMounted = false; clearInterval(timer); };
   }, [user?.uid]);
 
-  // Real-time affiliate commissions subscription
+  // 60-second affiliate commissions polling
   useEffect(() => {
     if (!user?.uid) return;
-    const rawKeys = [
-      user.uid,
-      user.affiliateCode,
-      affiliate?.code,
-      user.username,
-      user.email ? user.email.split('@')[0] : ''
-    ].filter(Boolean) as string[];
+    let isMounted = true;
 
-    const myCodeKeysSet = new Set<string>();
-    rawKeys.forEach(k => {
-      myCodeKeysSet.add(k);
-      myCodeKeysSet.add(k.toLowerCase());
-      myCodeKeysSet.add(k.toUpperCase());
-    });
-    const myCodes = Array.from(myCodeKeysSet);
+    const fetchCommissions = async () => {
+      const commMap = new Map<string, any>();
+      const rawKeys = [user.uid, user.affiliateCode, affiliate?.code, user.username].filter(Boolean) as string[];
+      for (const k of rawKeys.slice(0, 3)) {
+        try {
+          const list = await getDocsCached(`aff_comm_${k}`, async () => {
+            const snap = await getDocs(query(collection(db, 'affiliate_commissions'), where('affiliateId', '==', k), limit(20)));
+            return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          }, 60000, false, 'TraderDashboard');
+          list.forEach((c: any) => commMap.set(c.id, c));
+        } catch (e) {}
+      }
+      if (isMounted) {
+        const sorted = Array.from(commMap.values()).sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setCommissionsList(sorted);
+      }
+    };
 
-    const unsubCommList: (() => void)[] = [];
-    const commMap = new Map<string, any>();
-
-    myCodes.slice(0, 8).forEach((codeKey) => {
-      const q = query(collection(db, 'affiliate_commissions'), where('affiliateId', '==', codeKey));
-      const unsub = onSnapshot(q, (snapshot) => {
-        snapshot.forEach(d => commMap.set(d.id, { id: d.id, ...d.data() }));
-        const list = Array.from(commMap.values());
-        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        setCommissionsList(list);
-      }, err => console.warn("Error listening to affiliate commissions:", err));
-      unsubCommList.push(unsub);
-    });
-
-    return () => unsubCommList.forEach(u => u());
+    fetchCommissions();
+    const timer = setInterval(fetchCommissions, 60000);
+    return () => { isMounted = false; clearInterval(timer); };
   }, [user?.uid, user?.affiliateCode, affiliate?.code]);
 
   const totalEarnedCommissions = commissionsList.reduce((acc, c) => acc + (Number(c.commissionAmount) || 0), 0) || totalEarnings;
@@ -995,62 +1007,86 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
   // Dropdown states
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
 
-  // Sync Accounts in real-time using Firestore onSnapshot
+  // Sync Accounts with 60s cached polling & pagination limit
   useEffect(() => {
-    const q = query(collection(db, 'accounts'), where('userId', '==', user.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetched: TradingAccount[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data() as TradingAccount;
-        if (data.accountType === 'payout_later') {
-          const startBal = data.startingBalance || data.size || 10000;
-          const expectedTarget = startBal * 0.08;
-          if (data.profitTarget !== expectedTarget) {
-            data.profitTarget = expectedTarget;
-            updateDoc(doc(db, 'accounts', data.id), { profitTarget: expectedTarget }).catch((err) => {
-              console.warn("Could not sync profitTarget to Firestore:", err);
-            });
+    if (!user?.uid) return;
+    let isMounted = true;
+
+    const fetchAccounts = async () => {
+      try {
+        const fetched = await getDocsCached<TradingAccount>(`user_accounts_${user.uid}`, async () => {
+          const q = query(collection(db, 'accounts'), where('userId', '==', user.uid), limit(20));
+          const snapshot = await getDocs(q);
+          const list: TradingAccount[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data() as TradingAccount;
+            if (data.accountType === 'payout_later') {
+              const startBal = data.startingBalance || data.size || 10000;
+              const expectedTarget = startBal * 0.08;
+              if (data.profitTarget !== expectedTarget) {
+                data.profitTarget = expectedTarget;
+                updateDoc(doc(db, 'accounts', data.id), { profitTarget: expectedTarget }).catch(() => {});
+              }
+            }
+            list.push(data);
+          });
+          return list;
+        }, 60000, false, 'TraderDashboard');
+
+        if (isMounted) {
+          setAccounts(fetched);
+          if (fetched.length > 0) {
+            if (!selectedAccount) {
+              setSelectedAccount(fetched[0]);
+            } else {
+              const updated = fetched.find(a => a.id === selectedAccount.id);
+              if (updated) setSelectedAccount(updated);
+            }
+          } else {
+            setSelectedAccount(null);
           }
         }
-        fetched.push(data);
-      });
-      setAccounts(fetched);
-
-      // Default select the first account or keep the current selected one updated
-      if (fetched.length > 0) {
-        if (!selectedAccount) {
-          setSelectedAccount(fetched[0]);
-        } else {
-          const updated = fetched.find(a => a.id === selectedAccount.id);
-          if (updated) setSelectedAccount(updated);
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
+          setIsQuotaExceeded(true);
         }
-      } else {
-        setSelectedAccount(null);
       }
-    }, (error) => {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
-        setIsQuotaExceeded(true);
-      }
-      handleFirestoreError(error, OperationType.LIST, 'accounts');
-    });
+    };
 
-    return () => unsubscribe();
+    fetchAccounts();
+    const timer = setInterval(fetchAccounts, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
   }, [user.uid]);
 
-  // Real-time trades listener for risk metrics & audit calculations
+  // User trades 60s cached polling
   const [userTrades, setUserTrades] = useState<any[]>([]);
   useEffect(() => {
     if (!user?.uid) return;
-    const q = query(collection(db, 'trades'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list: any[] = [];
-      snapshot.forEach((d) => list.push({ id: d.id, ...d.data() }));
-      setUserTrades(list);
-    }, (err) => {
-      console.warn("User trades listener notice:", err);
-    });
-    return () => unsub();
+    let isMounted = true;
+
+    const fetchTrades = async () => {
+      try {
+        const list = await getDocsCached(`user_trades_${user.uid}`, async () => {
+          const q = query(collection(db, 'trades'), where('userId', '==', user.uid), limit(50));
+          const snapshot = await getDocs(q);
+          return snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        }, 60000, false, 'TraderDashboard');
+        if (isMounted) setUserTrades(list);
+      } catch (err) {
+        console.warn("User trades fetch notice:", err);
+      }
+    };
+
+    fetchTrades();
+    const timer = setInterval(fetchTrades, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
   }, [user?.uid]);
 
   // Sync Payouts, Affiliates and Certificates

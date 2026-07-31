@@ -9,6 +9,7 @@ import { auth, db } from './firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, increment, collection, query, where, getDocs } from 'firebase/firestore';
 import { ensureUserAffiliateCode } from './utils/affiliateManager';
+import { getDocCached } from './lib/firestoreCache';
 
 export default function App() {
   const [screen, setScreen] = useState<'landing' | 'auth' | 'dashboard' | 'admin-portal' | 'admin-dashboard'>('landing');
@@ -21,12 +22,16 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (authUser) => {
       if (authUser) {
         try {
-          // Fetch allowed admin email gracefully
+          // Fetch allowed admin email gracefully with 10 min cache
           let allowedAdminEmail = 'atgrowfund@gmail.com';
           try {
-            const settingsSnap = await getDoc(doc(db, 'settings', 'general'));
-            if (settingsSnap.exists()) {
-              allowedAdminEmail = (settingsSnap.data().adminEmail || 'atgrowfund@gmail.com').trim().toLowerCase();
+            const settingsData = await getDocCached('settings_general', async () => {
+              const snap = await getDoc(doc(db, 'settings', 'general'));
+              return snap.exists() ? snap.data() : null;
+            }, 10 * 60 * 1000, false, 'App.tsx');
+            
+            if (settingsData?.adminEmail) {
+              allowedAdminEmail = settingsData.adminEmail.trim().toLowerCase();
             }
           } catch (settingsError) {
             console.warn("Failed to fetch general settings, using default admin email:", settingsError);
@@ -38,18 +43,21 @@ export default function App() {
             userEmail === 'atgrowfund@gmail.com' || 
             userEmail === 'asjadtrades07@gmail.com';
 
-          let docSnap = null;
+          // Requirement 4: User profile data cached for 5 minutes (300,000 ms)
+          let profileData: UserProfile | null = null;
           try {
-            docSnap = await getDoc(doc(db, 'users', authUser.uid));
+            profileData = await getDocCached<UserProfile>(`user_profile_${authUser.uid}`, async () => {
+              const snap = await getDoc(doc(db, 'users', authUser.uid));
+              return snap.exists() ? (snap.data() as UserProfile) : null;
+            }, 5 * 60 * 1000, false, 'App.tsx');
           } catch (userDocError) {
             console.warn("Failed to fetch user profile, using fallback profile creation:", userDocError);
           }
 
           const finalRole = isUserConfiguredAdmin ? 'admin' : 'trader';
 
-          if (docSnap && docSnap.exists()) {
-            const profile = docSnap.data() as UserProfile;
-            const updatedProfile = { ...profile, role: finalRole };
+          if (profileData) {
+            const updatedProfile = { ...profileData, role: finalRole };
             
             // Ensure affiliate code exists permanently without modifying existing ones
             if (!updatedProfile.affiliateCode) {
@@ -60,7 +68,7 @@ export default function App() {
             setUserProfile(updatedProfile);
             
             // Sync role to Firestore if it changed
-            if (profile.role !== finalRole) {
+            if (profileData.role !== finalRole) {
               try {
                 await setDoc(doc(db, 'users', authUser.uid), { role: finalRole }, { merge: true });
                 console.log(`Synced user role to ${finalRole} in Firestore.`);
@@ -108,6 +116,7 @@ export default function App() {
             } else if (window.location.hash === '#/admin-portal' || window.location.hash === '#admin-portal') {
               await signOut(auth);
               setUserProfile(null);
+
               setScreen('admin-portal');
             } else {
               setScreen('dashboard');

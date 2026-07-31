@@ -1,8 +1,9 @@
-import { onSnapshot, collection, query, where, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, doc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Trade } from '../types';
 import { subscribeToPrices } from './priceEngine';
 import { calculateTradePnL, getContractSize } from './pnlEngine';
+import { getDocsCached } from '../lib/firestoreCache';
 
 export interface RichTrade extends Trade {
   direction: 'buy' | 'sell';
@@ -71,6 +72,8 @@ function notifySubscribers() {
 let currentSubAccountId: string | null = null;
 let currentSubUserId: string | null = null;
 
+let pollIntervalId: any = null;
+
 // Initialize position subscription for selected account
 export function subscribeToPositions(
   accountId: string,
@@ -79,56 +82,47 @@ export function subscribeToPositions(
 ): () => void {
   listeners.add(callback);
   
-  // If account changed or no active query, setup/replace snapshot
-  if (!firestoreUnsubscribe || currentSubAccountId !== accountId || currentSubUserId !== userId) {
-    if (firestoreUnsubscribe) {
-      firestoreUnsubscribe();
-      firestoreUnsubscribe = null;
-    }
-    
-    currentSubAccountId = accountId;
-    currentSubUserId = userId;
-    
-    const q = query(
-      collection(db, 'trades'),
-      where('accountId', '==', accountId),
-      where('userId', '==', userId)
-    );
+  const fetchPositions = async () => {
+    try {
+      const dbTrades = await getDocsCached<RichTrade>(`positions_${accountId}_${userId}`, async () => {
+        const q = query(
+          collection(db, 'trades'),
+          where('accountId', '==', accountId),
+          where('userId', '==', userId)
+        );
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(docSnap => mapToRichTrade({ id: docSnap.id, ...docSnap.data() }));
+      }, 10000, false, 'positionEngine');
 
-    firestoreUnsubscribe = onSnapshot(q, (snapshot) => {
-      const dbTrades: RichTrade[] = [];
-      snapshot.forEach((docSnap) => {
-        dbTrades.push(mapToRichTrade({ id: docSnap.id, ...docSnap.data() }));
-      });
-
-      // Filter open and closed
       openPositions = dbTrades.filter((t) => t.statusUpper === 'OPEN');
       closedPositions = dbTrades
         .filter((t) => t.statusUpper === 'CLOSED')
         .sort((a, b) => new Date(b.closeTime || '').getTime() - new Date(a.closeTime || '').getTime());
 
-      // Boot up/sync real-time pricing updates to update floating PnL
       syncFloatingPnL();
       notifySubscribers();
-    }, (err) => {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
-        console.warn("Firestore position engine subscription quota limit reached:", errMsg);
-      } else {
-        console.error("Firestore position engine subscription error:", err);
-      }
-    });
+    } catch (err: any) {
+      console.warn("Position fetch error:", err);
+    }
+  };
+
+  if (currentSubAccountId !== accountId || currentSubUserId !== userId || !pollIntervalId) {
+    if (pollIntervalId) clearInterval(pollIntervalId);
+    currentSubAccountId = accountId;
+    currentSubUserId = userId;
+
+    fetchPositions();
+    pollIntervalId = setInterval(fetchPositions, 15000);
   } else {
-    // Immediate callback with cached data
     callback([...openPositions], [...closedPositions]);
   }
 
   return () => {
     listeners.delete(callback);
     if (listeners.size === 0) {
-      if (firestoreUnsubscribe) {
-        firestoreUnsubscribe();
-        firestoreUnsubscribe = null;
+      if (pollIntervalId) {
+        clearInterval(pollIntervalId);
+        pollIntervalId = null;
       }
       if (priceUnsubscribe) {
         priceUnsubscribe();
