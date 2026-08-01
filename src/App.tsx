@@ -10,12 +10,19 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, increment, collection, query, where, getDocs } from 'firebase/firestore';
 import { ensureUserAffiliateCode } from './utils/affiliateManager';
 import { getDocCached } from './lib/firestoreCache';
+import { setupMetaMaskErrorGuard } from './utils/web3Manager';
 
 export default function App() {
   const [screen, setScreen] = useState<'landing' | 'auth' | 'dashboard' | 'admin-portal' | 'admin-dashboard'>('landing');
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+
+  // Register global Web3/MetaMask error guard to handle extension rejections safely
+  useEffect(() => {
+    const cleanupGuard = setupMetaMaskErrorGuard();
+    return () => cleanupGuard();
+  }, []);
 
   // Monitor firebase authentication state on boot
   useEffect(() => {

@@ -29,6 +29,7 @@ import { auditAccount, calculateDynamicAccountMetrics, calculateAccountRiskScore
 import { logAccountAuditChange, verifyAccountIntegrity } from '../utils/auditLogger';
 import { createFirestoreBackup, checkAndRunDailyAutoBackup, listFirestoreBackups, restoreFirestoreBackup, FirestoreBackupRecord } from '../utils/backupManager';
 import { getAutoCloseDebugMode, setAutoCloseDebugMode, getAutoCloseDebugLogs, AutoCloseDebugLog } from '../utils/autoCloseLogger';
+import { DEFAULT_FAQS } from '../constants/defaultFaqs';
 
 export default function AdminPanel() {
   const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control' | 'certificates' | 'leaderboard' | 'database_backups' | 'auto_close_debug'>('stats');
@@ -442,6 +443,7 @@ export default function AdminPanel() {
 
   // FAQ States
   const [faqsList, setFaqsList] = useState<any[]>([]);
+  const [faqCategory, setFaqCategory] = useState<'General' | 'Rules & Drawdowns' | 'Payouts' | 'Accounts & Evaluation' | 'Trading Rules & EAs'>('General');
   const [faqQuestion, setFaqQuestion] = useState('');
   const [faqAnswer, setFaqAnswer] = useState('');
   const [editingFaqId, setEditingFaqId] = useState<string | null>(null);
@@ -8586,29 +8588,88 @@ export default function AdminPanel() {
               {/* SUB-TAB 2: FAQS CMS */}
               {cmsSubTab === 'faqs' && (
                 <div className="space-y-6">
+                  {/* Top Action Bar with Bootstrap Default FAQs Button */}
+                  <div className="bg-[#0b0f19] p-4 border border-white/10 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-lg">
+                    <div>
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider">FAQ Knowledge Base Management</h4>
+                      <p className="text-[11px] text-slate-400">Add, edit, reorder, or bootstrap official ATFunding FAQs for the website and trader portal.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!confirm("This will seed/overwrite the 14 default official ATFunding FAQs into Firestore. Proceed?")) return;
+                        setIsSavingCms(true);
+                        try {
+                          for (const faq of DEFAULT_FAQS) {
+                            await setDoc(doc(db, 'faqs', faq.id), {
+                              id: faq.id,
+                              category: faq.category,
+                              question: faq.question,
+                              answer: faq.answer,
+                              order: faq.order,
+                              updatedAt: new Date().toISOString()
+                            }, { merge: true });
+                          }
+                          setCmsSaveMsg("Successfully seeded 14 official ATFunding FAQs into Firestore!");
+                          // Refresh FAQs list
+                          const snap = await getDocs(query(collection(db, 'faqs'), limit(100)));
+                          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                          list.sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+                          setFaqsList(list);
+                          setTimeout(() => setCmsSaveMsg(''), 4000);
+                        } catch (err: any) {
+                          console.error("Error seeding default FAQs:", err);
+                          setCmsSaveMsg("Error seeding default FAQs: " + err.message);
+                        }
+                        setIsSavingCms(false);
+                      }}
+                      disabled={isSavingCms}
+                      className="px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer shrink-0"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Seed Default 14 Official FAQs</span>
+                    </button>
+                  </div>
+
                   {/* Add/Edit FAQ Form */}
                   <div className="bg-black/30 p-5 border border-white/5 rounded-2xl space-y-4">
                     <h4 className="text-xs font-bold text-white uppercase tracking-wider">
                       {editingFaqId ? 'Edit Frequently Asked Question' : 'Add New Frequently Asked Question'}
                     </h4>
-                    <div className="grid grid-cols-1 gap-4">
-                      <div className="space-y-1">
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                      <div className="md:col-span-4 space-y-1">
+                        <label className="text-[10px] text-slate-400 uppercase font-semibold">Category</label>
+                        <select
+                          value={faqCategory}
+                          onChange={(e: any) => setFaqCategory(e.target.value)}
+                          className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white focus:outline-none focus:border-blue-500 cursor-pointer"
+                        >
+                          <option value="General" className="bg-slate-900">General</option>
+                          <option value="Rules & Drawdowns" className="bg-slate-900">Rules & Drawdowns</option>
+                          <option value="Payouts" className="bg-slate-900">Payouts</option>
+                          <option value="Accounts & Evaluation" className="bg-slate-900">Accounts & Evaluation</option>
+                          <option value="Trading Rules & EAs" className="bg-slate-900">Trading Rules & EAs</option>
+                        </select>
+                      </div>
+
+                      <div className="md:col-span-8 space-y-1">
                         <label className="text-[10px] text-slate-400 uppercase font-semibold">Question String</label>
                         <input
                           type="text"
                           value={faqQuestion}
                           onChange={(e) => setFaqQuestion(e.target.value)}
-                          placeholder="e.g., What are the payout guidelines?"
+                          placeholder="e.g., What is Daily Drawdown?"
                           className="w-full h-10 bg-black/40 border border-white/10 rounded-xl px-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                         />
                       </div>
-                      <div className="space-y-1">
+
+                      <div className="md:col-span-12 space-y-1">
                         <label className="text-[10px] text-slate-400 uppercase font-semibold">Detailed Answer</label>
                         <textarea
                           rows={4}
                           value={faqAnswer}
                           onChange={(e) => setFaqAnswer(e.target.value)}
-                          placeholder="Provide the complete parameter answer for traders here..."
+                          placeholder="Provide the complete clear answer for traders here..."
                           className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500"
                         />
                       </div>
@@ -8621,6 +8682,7 @@ export default function AdminPanel() {
                             setEditingFaqId(null);
                             setFaqQuestion('');
                             setFaqAnswer('');
+                            setFaqCategory('General');
                           }}
                           className="px-4 h-9 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg text-xs transition-colors"
                         >
@@ -8631,13 +8693,14 @@ export default function AdminPanel() {
                         type="button"
                         onClick={async () => {
                           if (!faqQuestion.trim() || !faqAnswer.trim()) {
-                            alert("Please fill in both fields!");
+                            alert("Please fill in both question and answer fields!");
                             return;
                           }
                           setIsSavingCms(true);
                           try {
                             if (editingFaqId) {
                               await setDoc(doc(db, 'faqs', editingFaqId), {
+                                category: faqCategory,
                                 question: faqQuestion.trim(),
                                 answer: faqAnswer.trim(),
                                 order: faqsList.find(f => f.id === editingFaqId)?.order || Date.now()
@@ -8647,6 +8710,7 @@ export default function AdminPanel() {
                               const newId = 'FAQ-' + Math.floor(100000 + Math.random() * 900000);
                               await setDoc(doc(db, 'faqs', newId), {
                                 id: newId,
+                                category: faqCategory,
                                 question: faqQuestion.trim(),
                                 answer: faqAnswer.trim(),
                                 order: faqsList.length + 1,
@@ -8656,7 +8720,15 @@ export default function AdminPanel() {
                             }
                             setFaqQuestion('');
                             setFaqAnswer('');
+                            setFaqCategory('General');
                             setEditingFaqId(null);
+
+                            // Refresh FAQs list
+                            const snap = await getDocs(query(collection(db, 'faqs'), limit(100)));
+                            const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                            list.sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+                            setFaqsList(list);
+
                             setTimeout(() => setCmsSaveMsg(''), 3000);
                           } catch (err) {
                             console.error(err);
@@ -8679,6 +8751,12 @@ export default function AdminPanel() {
                       {faqsList.map((faq, idx) => (
                         <div key={faq.id || idx} className="bg-black/20 border border-white/5 p-4 rounded-xl flex justify-between items-start gap-4">
                           <div className="space-y-1">
+                            <div className="flex items-center space-x-2">
+                              <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                {faq.category || 'General'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-mono">#{idx + 1}</span>
+                            </div>
                             <h5 className="text-xs font-bold text-white">{faq.question}</h5>
                             <p className="text-[11px] text-slate-400 whitespace-pre-wrap">{faq.answer}</p>
                           </div>
@@ -8687,6 +8765,7 @@ export default function AdminPanel() {
                               type="button"
                               onClick={() => {
                                 setEditingFaqId(faq.id);
+                                setFaqCategory(faq.category || 'General');
                                 setFaqQuestion(faq.question);
                                 setFaqAnswer(faq.answer);
                               }}
@@ -8702,6 +8781,11 @@ export default function AdminPanel() {
                                 try {
                                   await deleteDoc(doc(db, 'faqs', faq.id));
                                   setCmsSaveMsg("FAQ deleted successfully!");
+                                  // Refresh list
+                                  const snap = await getDocs(query(collection(db, 'faqs'), limit(100)));
+                                  const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                                  list.sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+                                  setFaqsList(list);
                                   setTimeout(() => setCmsSaveMsg(''), 3000);
                                 } catch (err) {
                                   console.error(err);
@@ -8716,7 +8800,7 @@ export default function AdminPanel() {
                         </div>
                       ))}
                       {faqsList.length === 0 && (
-                        <p className="text-xs text-slate-500 italic">No FAQs recorded. Use the form above to bootstrap default questions.</p>
+                        <p className="text-xs text-slate-500 italic">No FAQs recorded. Click "Seed Default 14 Official FAQs" or use the form above to add questions.</p>
                       )}
                     </div>
                   </div>

@@ -3,7 +3,7 @@ import {
   TrendingUp, Layers, Gift, DollarSign, Award, Ticket, 
   User, Settings, LogOut, Check, AlertCircle, AlertTriangle, Users, 
   Share2, FileText, ExternalLink, RefreshCw, ChevronDown, Key,
-  ShieldCheck, Upload, Loader2, Coins, ShoppingBag, ListTodo, Copy, Zap, Clock
+  ShieldCheck, Upload, Loader2, Coins, ShoppingBag, ListTodo, Copy, Zap, Clock, HelpCircle
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { TradingAccount, UserProfile, PayoutRequest, Affiliate, Certificate, ReferralWithdrawal } from '../types';
@@ -15,6 +15,8 @@ import { collection, query, where, getDocs, doc, setDoc, updateDoc, onSnapshot, 
 import { getDocsCached, getDocCached } from '../lib/firestoreCache';
 import { ensureUserAffiliateCode, getOfficialAffiliateLink } from '../utils/affiliateManager';
 import { logAccountAuditChange, verifyAccountIntegrity } from '../utils/auditLogger';
+import { connectMetaMask } from '../utils/web3Manager';
+import FAQSection from './FAQSection';
 
 // Subcomponents
 import { auditAccount, calculateAccountRiskScore, getMaxLotSize, getProfitableTradingDays, detectGamblingBehavior } from '../core/riskEngine';
@@ -30,7 +32,7 @@ interface TraderDashboardProps {
 }
 
 export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: TraderDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'terminal' | 'buy' | 'payout' | 'affiliate' | 'certificates' | 'kyc' | 'earn'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'terminal' | 'buy' | 'payout' | 'affiliate' | 'certificates' | 'kyc' | 'earn' | 'faq'>('overview');
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(null);
 
@@ -1376,7 +1378,8 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
               { id: 'affiliate', label: 'Affiliates', icon: Share2 },
               { id: 'certificates', label: 'Certificates', icon: Award },
               { id: 'kyc', label: 'KYC Verification', icon: ShieldCheck },
-              { id: 'earn', label: 'Earn Coins', icon: Coins }
+              { id: 'earn', label: 'Earn Coins', icon: Coins },
+              { id: 'faq', label: 'FAQ Hub', icon: HelpCircle }
             ].map((link) => (
               <button
                 key={link.id}
@@ -1929,7 +1932,23 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-400">Your Wallet Address / Bank Details</label>
+                    <div className="flex justify-between items-center">
+                      <label className="text-xs font-bold text-slate-400">Your Wallet Address / Bank Details</label>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await connectMetaMask();
+                          if (res.success && res.account) {
+                            setPayoutAddress(res.account);
+                          } else if (res.error) {
+                            alert(res.error);
+                          }
+                        }}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center space-x-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 cursor-pointer"
+                      >
+                        <span>🦊 Auto-fill MetaMask</span>
+                      </button>
+                    </div>
                     <textarea
                       rows={3}
                       placeholder="Enter crypto wallet address or bank routing/SWIFT/IBAN credentials..."
@@ -3518,6 +3537,17 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* FAQ TAB VIEW */}
+        {activeTab === 'faq' && (
+          <div className="space-y-8 animate-fade-in text-left">
+            <FAQSection
+              isFullPage={false}
+              isAuthenticated={true}
+              supportEmail="atfundingsupport@gmail.com"
+            />
           </div>
         )}
 

@@ -9,6 +9,7 @@ import { AccountType, SocialLink } from '../types';
 import { db } from '../firebase';
 import { doc, collection, query, where, setDoc, getDoc, getDocs, limit } from 'firebase/firestore';
 import { getDocsCached } from '../lib/firestoreCache';
+import FAQSection from './FAQSection';
 
 interface LandingPageProps {
   onSelectPackage: (pkg: ChallengePackage) => void;
@@ -25,6 +26,7 @@ export default function LandingPage({
   isAuthenticated,
 }: LandingPageProps) {
   const [selectedType, setSelectedType] = useState<AccountType>('two_step');
+  const [isFullFaqPage, setIsFullFaqPage] = useState<boolean>(false);
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
 
   // Dynamic Landing Page CMS states
@@ -159,6 +161,19 @@ export default function LandingPage({
     }
   };
 
+  if (isFullFaqPage) {
+    return (
+      <FAQSection
+        isFullPage={true}
+        onBackToHome={() => setIsFullFaqPage(false)}
+        supportEmail={supportEmail}
+        onNavigateToAuth={onNavigateToAuth}
+        onNavigateToDashboard={onNavigateToDashboard}
+        isAuthenticated={isAuthenticated}
+      />
+    );
+  }
+
   return (
     <div id="landing-page" className="min-h-screen bg-[#020617] text-slate-200 font-sans selection:bg-blue-500 selection:text-white overflow-x-hidden relative">
       {/* Background Mesh Gradients */}
@@ -169,7 +184,7 @@ export default function LandingPage({
       {/* Header / Navbar */}
       <header className="sticky top-0 z-50 bg-white/5 border-b border-white/10 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setIsFullFaqPage(false)}>
             <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center font-bold text-white">
               AT
             </div>
@@ -184,6 +199,7 @@ export default function LandingPage({
             <a href="#comparison" className="text-sm font-medium text-slate-400 hover:text-white transition-colors">Comparison</a>
             <a href="#features" className="text-sm font-medium text-slate-400 hover:text-white transition-colors">Why ATFunding</a>
             <a href="#leaderboard" className="text-sm font-medium text-slate-400 hover:text-white transition-colors">Leaderboard</a>
+            <a href="#faq" onClick={() => setIsFullFaqPage(false)} className="text-sm font-medium text-slate-400 hover:text-white transition-colors">FAQ</a>
           </nav>
 
           <div className="flex items-center space-x-4">
@@ -803,34 +819,22 @@ export default function LandingPage({
 
       {/* FAQs Section */}
       <section id="faq" className="py-20 md:py-28 bg-white/3 border-t border-white/10 backdrop-blur-sm">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 space-y-12">
-          <div className="text-center space-y-4">
-            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-bold uppercase tracking-wider">
-              <span>FAQ Center</span>
-            </div>
-            <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">Frequently Asked Questions</h2>
-            <p className="text-slate-400 text-sm">Get instant answers to core prop evaluation rules.</p>
-          </div>
-
-          <div className="space-y-4">
-            {faqsList.map((faq, index) => (
-              <div 
-                key={faq.id || index} 
-                onClick={() => toggleFaq(index)}
-                className="bg-white/5 border border-white/10 rounded-3xl p-5 cursor-pointer hover:border-blue-500/30 transition-all shadow-xl"
-              >
-                <div className="flex justify-between items-center">
-                  <h4 className="font-bold text-white text-base sm:text-lg tracking-tight">{faq.question}</h4>
-                  <HelpCircle className={`w-5 h-5 text-blue-400 transition-transform duration-200 ${faqOpen === index ? 'rotate-180' : ''}`} />
-                </div>
-                {faqOpen === index && (
-                  <p className="mt-3 text-sm text-slate-400 leading-relaxed border-t border-white/10 pt-3 whitespace-pre-wrap">
-                    {faq.answer}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
+        <FAQSection
+          isFullPage={false}
+          supportEmail={supportEmail}
+          onNavigateToAuth={onNavigateToAuth}
+          onNavigateToDashboard={onNavigateToDashboard}
+          isAuthenticated={isAuthenticated}
+          onBackToHome={() => setIsFullFaqPage(false)}
+        />
+        <div className="mt-8 text-center">
+          <button
+            onClick={() => { setIsFullFaqPage(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            className="px-6 py-3 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 hover:text-white font-bold rounded-2xl text-xs uppercase tracking-wider transition-all inline-flex items-center space-x-2 shadow-lg shadow-blue-500/10 cursor-pointer"
+          >
+            <span>Open Dedicated FAQ Knowledge Base Page</span>
+            <ArrowRight className="w-4 h-4 text-blue-400" />
+          </button>
         </div>
       </section>
 

@@ -11,6 +11,7 @@ import { collection, doc, setDoc, getDoc, updateDoc, increment, onSnapshot, addD
 import { getDocsCached } from '../lib/firestoreCache';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Order, PaymentSettings, Coupon } from '../types';
+import { connectMetaMask, isMetaMaskInstalled } from '../utils/web3Manager';
 
 interface BuyAccountPanelProps {
   userId: string;
@@ -74,6 +75,29 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [currencyMode, setCurrencyMode] = useState<'USD' | 'INR'>('USD');
   const USD_TO_INR = 88;
+
+  // Web3 / MetaMask Connection State
+  const [web3Account, setWeb3Account] = useState<string | null>(null);
+  const [isWeb3Connecting, setIsWeb3Connecting] = useState(false);
+  const [web3Msg, setWeb3Msg] = useState<string | null>(null);
+
+  const handleConnectWeb3 = async () => {
+    setIsWeb3Connecting(true);
+    setWeb3Msg(null);
+    try {
+      const result = await connectMetaMask();
+      if (result.success && result.account) {
+        setWeb3Account(result.account);
+        setWeb3Msg(`Connected to MetaMask: ${result.account.substring(0, 6)}...${result.account.substring(result.account.length - 4)}`);
+      } else {
+        setWeb3Msg(result.error || "Failed to connect to MetaMask.");
+      }
+    } catch (err: any) {
+      setWeb3Msg(err?.message || "Failed to connect to MetaMask.");
+    } finally {
+      setIsWeb3Connecting(false);
+    }
+  };
 
   const formatDisplayPrice = (usdAmount: number, forceCurrency?: 'USD' | 'INR') => {
     const mode = forceCurrency || currencyMode;
@@ -1520,6 +1544,48 @@ export default function BuyAccountPanel({ userId, userEmail, onPurchaseSuccess }
                   <p className="text-[11px] text-emerald-400 font-semibold text-center font-mono">
                     Copied successfully to clipboard!
                   </p>
+                )}
+
+                {/* Optional Web3 MetaMask Connection Widget */}
+                {cryptoMethod !== 'UPI' && (
+                  <div className="bg-blue-950/30 border border-blue-500/20 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400 text-[10px] font-bold">
+                          🦊
+                        </div>
+                        <span className="text-xs font-bold text-white">MetaMask / Web3 Wallet</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleConnectWeb3}
+                        disabled={isWeb3Connecting}
+                        className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-lg text-xs font-bold transition-all flex items-center space-x-1 cursor-pointer"
+                      >
+                        {isWeb3Connecting ? (
+                          <>
+                            <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                            <span>Connecting...</span>
+                          </>
+                        ) : web3Account ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span>Connected</span>
+                          </>
+                        ) : (
+                          <span>Connect MetaMask</span>
+                        )}
+                      </button>
+                    </div>
+
+                    {web3Msg && (
+                      <p className={`text-[10px] font-mono leading-tight ${
+                        web3Account ? 'text-emerald-400' : 'text-amber-300/80'
+                      }`}>
+                        {web3Msg}
+                      </p>
+                    )}
+                  </div>
                 )}
 
                 <div className="text-[11px] text-slate-400 bg-slate-800/20 p-3 rounded-xl leading-relaxed space-y-1">
