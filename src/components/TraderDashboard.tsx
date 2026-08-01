@@ -1205,54 +1205,22 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
       return;
     }
 
-    // Payout Access Control: Instant, AT Trial, and Funded accounts only
-    const isPayoutEligible = 
-      selectedAccount.accountType === 'instant_bolt' || 
-      selectedAccount.accountType === 'trial' || 
-      selectedAccount.phase === 3;
-
-    if (!isPayoutEligible) {
-      setPayoutMsg("Payout requests are not available for Phase 1, Phase 2, or Payout Later accounts. Only Instant, AT Trial, and Funded accounts are eligible.");
-      return;
-    }
-
     // Check AT Trial Expiry
     if (selectedAccount.accountType === 'trial' && selectedAccount.expiresAt && new Date(selectedAccount.expiresAt).getTime() < Date.now()) {
       setPayoutMsg("AT Trial account has expired after 15 days.");
       return;
     }
 
-    // Check KYC Status requirement
-    if ((user.kycStatus || localKycStatus) !== 'approved') {
-      setPayoutMsg("KYC approval required before requesting payout.");
-      return;
-    }
-
-    // Payout Protection & Rule Audit
-    const accountClosedTrades = userTrades.filter(
-      (t) => (t.status === 'closed' || t.statusUpper === 'CLOSED' || t.closeTime) &&
-             (String(t.accountId) === String(selectedAccount.id) || String(t.accountId) === String(selectedAccount.login))
-    );
-    const accountOpenTrades = userTrades.filter(
-      (t) => (t.status === 'open' || t.statusUpper === 'OPEN') &&
-             (String(t.accountId) === String(selectedAccount.id) || String(t.accountId) === String(selectedAccount.login))
-    );
-
-    const auditRes = auditAccount(selectedAccount, accountClosedTrades, accountOpenTrades);
-
-    if (!auditRes.canRequestPayout) {
-      setPayoutMsg(`🚫 Payout Protected: ${auditRes.payoutBlockedReason}`);
-      return;
-    }
-
-    const maxEligible = auditRes.expectedBalance - auditRes.startingBalance;
-    if (maxEligible <= 0) {
-      setPayoutMsg("No net profit balance available on this account to withdraw.");
-      return;
-    }
-
+    // Calculate maximum available net profit (or allow request up to balance/profit)
+    const maxEligible = Math.max(0, (selectedAccount.balance || 0) - (selectedAccount.startingBalance || 0));
     const amount = Number(payoutAmount);
-    if (isNaN(amount) || amount <= 0 || amount > maxEligible) {
+
+    if (isNaN(amount) || amount <= 0) {
+      setPayoutMsg("Please enter a valid payout withdrawal amount.");
+      return;
+    }
+
+    if (maxEligible > 0 && amount > maxEligible) {
       setPayoutMsg(`Please request an amount up to $${maxEligible.toFixed(2)}.`);
       return;
     }
@@ -1890,112 +1858,69 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
               <div className="lg:col-span-7 bg-white/5 border border-white/10 rounded-3xl p-6 space-y-4 backdrop-blur-sm shadow-xl">
                 <h3 className="text-sm font-bold text-white uppercase tracking-wider">Submit Payout Request</h3>
 
-                {selectedAccount && !(selectedAccount.accountType === 'instant_bolt' || selectedAccount.accountType === 'trial' || selectedAccount.accountType === 'funded' || selectedAccount.phase === 3) ? (
-                  <div className="p-6 bg-slate-900/80 border border-amber-500/30 rounded-2xl text-center space-y-4 my-2">
-                    <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto text-amber-400">
-                      <Lock className="w-6 h-6" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-white uppercase tracking-wider">Payout Section Locked</h4>
-                      <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                        Payout withdrawals are locked for Phase 1 & Phase 2 evaluation accounts.
-                      </p>
-                    </div>
-                    <p className="text-xs text-amber-200/90 bg-amber-500/10 p-3.5 rounded-xl border border-amber-500/20 leading-relaxed font-medium">
-                      🔒 You must complete Phase 1 and Phase 2 profit targets and get promoted to a <span className="font-bold text-white">Funded Account (Phase 3)</span> to unlock payout withdrawals.
-                    </p>
-                    <div className="text-[11px] text-slate-400 pt-1">
-                      Current Account: <span className="font-bold text-amber-400 font-mono">Phase {selectedAccount.phase} ({selectedAccount.accountType.replace('_', ' ')})</span>
-                    </div>
-                    <p className="text-[10px] text-slate-500">
-                      💡 Instant Funding accounts have Payout Section open directly.
-                    </p>
+                {payoutMsg && (
+                  <div className="p-3 bg-blue-500/10 border border-blue-500/25 text-blue-300 text-xs rounded-xl">
+                    {payoutMsg}
                   </div>
-                ) : (
-                  <>
-                    {payoutMsg && (
-                      <div className="p-3 bg-blue-500/10 border border-blue-500/25 text-blue-300 text-xs rounded-xl">
-                        {payoutMsg}
-                      </div>
-                    )}
-
-                    {/* KYC Warning message */}
-                    {(user.kycStatus || localKycStatus) !== 'approved' && (
-                      <div className="p-3.5 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs rounded-xl flex items-center space-x-2.5">
-                        <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
-                        <span className="font-semibold">KYC approval required before requesting payout.</span>
-                      </div>
-                    )}
-
-                    <form onSubmit={handleRequestPayout} className="space-y-4">
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-400">Withdrawal Amount (USD)</label>
-                        <input
-                          type="number"
-                          placeholder="e.g. 1500"
-                          value={payoutAmount}
-                          onChange={(e) => setPayoutAmount(e.target.value)}
-                          className="w-full h-11 glass-input rounded-xl px-4 text-xs font-mono text-white focus:outline-none"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-400">Payout Method</label>
-                        <select
-                          value={payoutMethod}
-                          onChange={(e) => setPayoutMethod(e.target.value)}
-                          className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none"
-                        >
-                          <option value="USDT (TRC20)" className="bg-slate-950 text-white">USDT (TRC20)</option>
-                          <option value="USDT (ERC20)" className="bg-slate-950 text-white">USDT (ERC20)</option>
-                          <option value="Bitcoin" className="bg-slate-950 text-white">Bitcoin (BTC)</option>
-                          <option value="Bank Wire Transfer" className="bg-slate-950 text-white">Bank Wire Transfer</option>
-                        </select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-400">Your Wallet Address / Bank Details</label>
-                        <textarea
-                          rows={3}
-                          placeholder="Enter crypto wallet address or bank routing/SWIFT/IBAN credentials..."
-                          value={payoutAddress}
-                          onChange={(e) => setPayoutAddress(e.target.value)}
-                          className="w-full glass-input rounded-xl p-4 text-xs text-white focus:outline-none"
-                        />
-                      </div>
-
-                      {(() => {
-                        const isKycApproved = (user.kycStatus || localKycStatus) === 'approved';
-                        const isEligibleAccount = selectedAccount ? (
-                          selectedAccount.accountType === 'instant_bolt' || 
-                          selectedAccount.accountType === 'trial' || 
-                          selectedAccount.accountType === 'funded' ||
-                          selectedAccount.phase === 3
-                        ) : false;
-
-                        const canRequest = isKycApproved && isEligibleAccount;
-
-                        return (
-                          <button
-                            type="submit"
-                            disabled={!canRequest}
-                            className={`w-full h-11 font-bold rounded-full text-xs transition-colors shadow-lg ${
-                              canRequest 
-                                ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/10 cursor-pointer' 
-                                : 'bg-slate-800 text-slate-500 border border-white/5 cursor-not-allowed opacity-75'
-                            }`}
-                          >
-                            {!isKycApproved 
-                              ? "KYC approval required before requesting payout." 
-                              : !isEligibleAccount 
-                                ? "Payouts Disabled for Selected Account Type" 
-                                : "Submit Withdrawal Request"}
-                          </button>
-                        );
-                      })()}
-                    </form>
-                  </>
                 )}
+
+                {/* KYC Notice if pending */}
+                {(user.kycStatus || localKycStatus) !== 'approved' && (
+                  <div className="p-3.5 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs rounded-xl flex items-center space-x-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span className="font-semibold">Note: KYC submission will be verified along with your payout request.</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleRequestPayout} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-400">Withdrawal Amount (USD)</label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 1500"
+                      value={payoutAmount}
+                      onChange={(e) => setPayoutAmount(e.target.value)}
+                      className="w-full h-11 glass-input rounded-xl px-4 text-xs font-mono text-white focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-400">Payout Method</label>
+                    <select
+                      value={payoutMethod}
+                      onChange={(e) => setPayoutMethod(e.target.value)}
+                      className="w-full h-11 glass-input rounded-xl px-3 text-xs text-white focus:outline-none"
+                    >
+                      <option value="USDT (TRC20)" className="bg-slate-950 text-white">USDT (TRC20)</option>
+                      <option value="USDT (ERC20)" className="bg-slate-950 text-white">USDT (ERC20)</option>
+                      <option value="Bitcoin" className="bg-slate-950 text-white">Bitcoin (BTC)</option>
+                      <option value="Bank Wire Transfer" className="bg-slate-950 text-white">Bank Wire Transfer</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-400">Your Wallet Address / Bank Details</label>
+                    <textarea
+                      rows={3}
+                      placeholder="Enter crypto wallet address or bank routing/SWIFT/IBAN credentials..."
+                      value={payoutAddress}
+                      onChange={(e) => setPayoutAddress(e.target.value)}
+                      className="w-full glass-input rounded-xl p-4 text-xs text-white focus:outline-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!selectedAccount}
+                    className={`w-full h-11 font-bold rounded-full text-xs transition-colors shadow-lg ${
+                      selectedAccount 
+                        ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/10 cursor-pointer' 
+                        : 'bg-slate-800 text-slate-500 border border-white/5 cursor-not-allowed opacity-75'
+                    }`}
+                  >
+                    {!selectedAccount ? "Select an Account to Request Payout" : "Submit Withdrawal Request"}
+                  </button>
+                </form>
               </div>
 
               {/* Status and limits */}

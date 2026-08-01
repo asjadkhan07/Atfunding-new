@@ -13,7 +13,7 @@ import { db, auth } from '../firebase';
 import { firebaseTelemetry } from '../firebaseTelemetry';
 import { updatePassword } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, query, where, limit } from 'firebase/firestore';
-import { getDocsCached, getDocCached } from '../lib/firestoreCache';
+import { getDocsCached, getDocCached, invalidateCache } from '../lib/firestoreCache';
 import EmailCenter from './EmailCenter';
 import AdminCertificateManager from './AdminCertificateManager';
 import LeaderboardView from './LeaderboardView';
@@ -1327,53 +1327,77 @@ export default function AdminPanel() {
     const isFixed = newCouponType === 'fixed';
     const val = Number(newCouponValue) || 0;
 
+    const docData: any = {
+      id: codeUpper,
+      code: codeUpper,
+      discountType: newCouponType,
+      discountPercent: isFixed ? 0 : val,
+      discountAmount: isFixed ? val : 0,
+      active: true,
+      applicableAccountTypes: finalTypes,
+      createdBy: 'admin',
+      usedCount: 0
+    };
+
+    if (newCouponExpiresAt.trim()) {
+      docData.expiresAt = newCouponExpiresAt.trim();
+    }
+    if (newCouponMaxUses && Number(newCouponMaxUses) > 0) {
+      docData.maxUses = Number(newCouponMaxUses);
+    }
+
+    // Optimistic UI update for immediate response
+    setCoupons(prev => [docData, ...prev.filter(c => c.code !== codeUpper && c.id !== codeUpper)]);
+    setNewCouponCode('');
+    setNewCouponValue(10);
+    setNewCouponType('percent');
+    setNewCouponExpiresAt('');
+    setNewCouponMaxUses('');
+    setNewCouponAccountTypes(['one_step', 'two_step', 'payout_later', 'instant_bolt', 'trial']);
+
     try {
-      const docData: any = {
-        code: codeUpper,
-        discountType: newCouponType,
-        discountPercent: isFixed ? 0 : val,
-        discountAmount: isFixed ? val : 0,
-        active: true,
-        applicableAccountTypes: finalTypes,
-        createdBy: 'admin',
-        usedCount: 0
-      };
-
-      if (newCouponExpiresAt.trim()) {
-        docData.expiresAt = newCouponExpiresAt.trim();
-      }
-      if (newCouponMaxUses && Number(newCouponMaxUses) > 0) {
-        docData.maxUses = Number(newCouponMaxUses);
-      }
-
       await setDoc(doc(db, 'coupons', codeUpper), docData);
-      setNewCouponCode('');
-      setNewCouponValue(10);
-      setNewCouponType('percent');
-      setNewCouponExpiresAt('');
-      setNewCouponMaxUses('');
-      setNewCouponAccountTypes(['one_step', 'two_step', 'payout_later', 'instant_bolt', 'trial']);
-      fetchAllData();
+      invalidateCache('admin_coupons');
     } catch (e) {
-      console.error(e);
+      console.error("Error adding coupon:", e);
+      invalidateCache('admin_coupons');
     }
   };
 
-  const handleToggleCoupon = async (code: string, currentActive: boolean) => {
+  const handleToggleCoupon = async (code: string, currentActive: boolean, docId?: string) => {
+    const idToUse = docId || code;
+    // Optimistic UI update
+    setCoupons(prev => prev.map(c => (c.code === code || c.id === idToUse) ? { ...c, active: !currentActive } : c));
+
     try {
-      await updateDoc(doc(db, 'coupons', code), { active: !currentActive });
-      fetchAllData();
+      await updateDoc(doc(db, 'coupons', idToUse), { active: !currentActive });
+      invalidateCache('admin_coupons');
     } catch (e) {
-      console.error(e);
+      console.error("Error toggling coupon:", e);
+      try {
+        await updateDoc(doc(db, 'coupons', code), { active: !currentActive });
+      } catch (err) {}
+      invalidateCache('admin_coupons');
     }
   };
 
-  const handleDeleteCoupon = async (code: string) => {
+  const handleDeleteCoupon = async (code: string, docId?: string) => {
+    const idToUse = docId || code;
+    // Optimistic UI update - immediate deletion from list
+    setCoupons(prev => prev.filter(c => c.code !== code && c.id !== idToUse));
+
     try {
-      await deleteDoc(doc(db, 'coupons', code));
-      fetchAllData();
+      await deleteDoc(doc(db, 'coupons', idToUse));
+      if (code && code !== idToUse) {
+        try { await deleteDoc(doc(db, 'coupons', code)); } catch(e){}
+      }
+      invalidateCache('admin_coupons');
     } catch (e) {
-      console.error(e);
+      console.error("Error deleting coupon:", e);
+      try {
+        await deleteDoc(doc(db, 'coupons', code));
+      } catch(err) {}
+      invalidateCache('admin_coupons');
     }
   };
 
@@ -7323,7 +7347,7 @@ export default function AdminPanel() {
                             </td>
                             <td className="py-3">
                               <button
-                                onClick={() => handleToggleCoupon(c.code, c.active)}
+                                onClick={() => handleToggleCoupon(c.code, c.active, c.id)}
                                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer ${
                                   c.active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
                                 }`}
@@ -7345,7 +7369,7 @@ export default function AdminPanel() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => handleDeleteCoupon(c.code)}
+                                onClick={() => handleDeleteCoupon(c.code, c.id)}
                                 className="p-1.5 text-red-400 hover:text-red-500 hover:bg-white/5 rounded-lg transition-colors cursor-pointer"
                                 title="Delete Coupon"
                               >
@@ -12409,16 +12433,61 @@ export default function AdminPanel() {
             </div>
 
             <div className="space-y-4">
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-400">Discount Percent (%)</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={editingCoupon.discountPercent}
-                  onChange={(e) => setEditingCoupon({ ...editingCoupon, discountPercent: Number(e.target.value) })}
-                  className="w-full h-10 glass-input rounded-xl px-3 text-xs text-white font-mono"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-400">Discount Type</label>
+                  <select
+                    value={editingCoupon.discountType || 'percent'}
+                    onChange={(e) => setEditingCoupon({ ...editingCoupon, discountType: e.target.value as 'percent' | 'fixed' })}
+                    className="w-full h-10 glass-input rounded-xl px-3 text-xs text-white font-mono bg-slate-900 border border-white/10"
+                  >
+                    <option value="percent">% Percentage</option>
+                    <option value="fixed">$ Fixed Amount</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-400">
+                    {editingCoupon.discountType === 'fixed' ? 'Discount ($)' : 'Discount Percent (%)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={editingCoupon.discountType === 'fixed' ? (editingCoupon.discountAmount || editingCoupon.discountPercent) : editingCoupon.discountPercent}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (editingCoupon.discountType === 'fixed') {
+                        setEditingCoupon({ ...editingCoupon, discountAmount: v, discountPercent: 0 });
+                      } else {
+                        setEditingCoupon({ ...editingCoupon, discountPercent: v, discountAmount: 0 });
+                      }
+                    }}
+                    className="w-full h-10 glass-input rounded-xl px-3 text-xs text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-400">Max Usage Limit</label>
+                  <input
+                    type="number"
+                    placeholder="Unlimited"
+                    value={editingCoupon.maxUses || ''}
+                    onChange={(e) => setEditingCoupon({ ...editingCoupon, maxUses: e.target.value ? Number(e.target.value) : undefined })}
+                    className="w-full h-10 glass-input rounded-xl px-3 text-xs text-white font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-400">Expiry Date</label>
+                  <input
+                    type="date"
+                    value={editingCoupon.expiresAt || ''}
+                    onChange={(e) => setEditingCoupon({ ...editingCoupon, expiresAt: e.target.value })}
+                    className="w-full h-10 glass-input rounded-xl px-3 text-xs text-white font-mono bg-slate-900 border border-white/10"
+                  />
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -12500,14 +12569,38 @@ export default function AdminPanel() {
                     const isAllSelected = rawList.length === 5 || rawList.includes('all') || rawList.length === 0;
                     const finalTypes = isAllSelected ? ['all'] : rawList;
 
-                    await updateDoc(doc(db, 'coupons', editingCoupon.code), {
-                      discountPercent: Number(editingCoupon.discountPercent),
+                    const docId = editingCoupon.id || editingCoupon.code;
+                    const isFixed = editingCoupon.discountType === 'fixed';
+                    const val = Number(isFixed ? editingCoupon.discountAmount : editingCoupon.discountPercent) || 0;
+
+                    const payload: any = {
+                      discountType: editingCoupon.discountType || 'percent',
+                      discountPercent: isFixed ? 0 : val,
+                      discountAmount: isFixed ? val : 0,
                       applicableAccountTypes: finalTypes
-                    });
+                    };
+
+                    if (editingCoupon.expiresAt !== undefined) {
+                      payload.expiresAt = editingCoupon.expiresAt;
+                    }
+                    if (editingCoupon.maxUses !== undefined) {
+                      payload.maxUses = Number(editingCoupon.maxUses) || 0;
+                    }
+
+                    // Optimistic state update
+                    setCoupons(prev => prev.map(c => (c.code === editingCoupon.code || c.id === docId) ? { ...c, ...payload } : c));
                     setEditingCoupon(null);
-                    fetchAllData();
+
+                    try {
+                      await updateDoc(doc(db, 'coupons', docId), payload);
+                      invalidateCache('admin_coupons');
+                    } catch (err) {
+                      await updateDoc(doc(db, 'coupons', editingCoupon.code), payload);
+                      invalidateCache('admin_coupons');
+                    }
                   } catch (err) {
                     console.error("Error updating coupon:", err);
+                    invalidateCache('admin_coupons');
                   }
                 }}
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg shadow-blue-600/20"

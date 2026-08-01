@@ -362,9 +362,6 @@ export function auditAccount(
   } else if (dynamic.expectedBalance <= dynamic.startingBalance) {
     canRequestPayout = false;
     payoutBlockedReason = `No net profit available for payout. (Current Balance: $${dynamic.expectedBalance.toLocaleString()} <= Initial: $${dynamic.startingBalance.toLocaleString()})`;
-  } else if (gambling.isGamblingDetected) {
-    canRequestPayout = false;
-    payoutBlockedReason = `Payout Protected: Gambling rules violated. (${gambling.flags[0]})`;
   }
 
   const drawdownStatus = dynamic.isDailyBreached
