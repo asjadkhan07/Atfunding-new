@@ -14,6 +14,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc, onSnapshot, getDoc, limit } from 'firebase/firestore';
 import { getDocsCached, getDocCached } from '../lib/firestoreCache';
 import { ensureUserAffiliateCode, getOfficialAffiliateLink } from '../utils/affiliateManager';
+import { logAccountAuditChange, verifyAccountIntegrity } from '../utils/auditLogger';
 
 // Subcomponents
 import { auditAccount, calculateAccountRiskScore, getMaxLotSize, getProfitableTradingDays, detectGamblingBehavior } from '../core/riskEngine';
@@ -1015,11 +1016,12 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
     const fetchAccounts = async () => {
       try {
         const fetched = await getDocsCached<TradingAccount>(`user_accounts_${user.uid}`, async () => {
-          const q = query(collection(db, 'accounts'), where('userId', '==', user.uid), limit(20));
+          const q = query(collection(db, 'accounts'), where('userId', '==', user.uid));
           const snapshot = await getDocs(q);
           const list: TradingAccount[] = [];
           snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as TradingAccount;
+            const rawData = docSnap.data() as TradingAccount;
+            const data = verifyAccountIntegrity(rawData);
             if (data.accountType === 'payout_later') {
               const startBal = data.startingBalance || data.size || 10000;
               const expectedTarget = startBal * 0.08;
@@ -1034,22 +1036,50 @@ export default function TraderDashboard({ user, onLogout, onSwitchToAdmin }: Tra
         }, 60000, false, 'TraderDashboard');
 
         if (isMounted) {
-          setAccounts(fetched);
-          if (fetched.length > 0) {
+          if (fetched && fetched.length > 0) {
+            setAccounts(fetched);
+            try {
+              localStorage.setItem(`accounts_snapshot_${user.uid}`, JSON.stringify(fetched));
+            } catch (e) {}
+
             if (!selectedAccount) {
               setSelectedAccount(fetched[0]);
             } else {
               const updated = fetched.find(a => a.id === selectedAccount.id);
               if (updated) setSelectedAccount(updated);
             }
-          } else {
+          } else if (fetched && fetched.length === 0) {
+            // Check for saved local snapshot before resetting
+            const stored = localStorage.getItem(`accounts_snapshot_${user.uid}`);
+            if (stored) {
+              try {
+                const parsed = JSON.parse(stored);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  setAccounts(parsed);
+                  if (!selectedAccount) setSelectedAccount(parsed[0]);
+                  return;
+                }
+              } catch (e) {}
+            }
+            setAccounts([]);
             setSelectedAccount(null);
           }
         }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted')) {
+        if (errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('exceeded') || errMsg.toLowerCase().includes('resource-exhausted') || errMsg.toLowerCase().includes('offline')) {
           setIsQuotaExceeded(true);
+        }
+        // Load last known account state from local snapshot so accounts never disappear
+        const stored = localStorage.getItem(`accounts_snapshot_${user.uid}`);
+        if (stored && isMounted) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setAccounts(parsed);
+              if (!selectedAccount) setSelectedAccount(parsed[0]);
+            }
+          } catch (e) {}
         }
       }
     };

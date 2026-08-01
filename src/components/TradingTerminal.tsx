@@ -20,6 +20,8 @@ import { recalculateAccountMetrics, calculatePositionMargin } from '../core/acco
 import { evaluateAccountRisk, getMaxLotSize, calculateDynamicAccountMetrics, calculateAccountRiskScore } from '../core/riskEngine';
 import { calculateTradePnL, getContractSize } from '../core/pnlEngine';
 import { getCandles, purgeAndRebuildAllCandles, getTimeframeStatus, getCandleEngineMetrics } from '../core/candleEngine';
+import { logAccountAuditChange, verifyAccountIntegrity } from '../utils/auditLogger';
+import { logAutoCloseDebug, getAutoCloseDebugMode, setAutoCloseDebugMode, getAutoCloseDebugLogs, AutoCloseDebugLog } from '../utils/autoCloseLogger';
 
 interface TradingTerminalProps {
   userId: string;
@@ -143,6 +145,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   // Auto-Close Audit Report Modal state
   const [showAuditReportModal, setShowAuditReportModal] = useState<boolean>(false);
   const [copiedReport, setCopiedReport] = useState<boolean>(false);
+  const [autoCloseDebugMode, setAutoCloseDebugState] = useState<boolean>(getAutoCloseDebugMode());
 
   // Live rule settings, profile, and violations states from Firestore
   const [userProfile, setUserProfile] = useState<any>(null);
@@ -358,18 +361,20 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       if (!symData) return;
 
       const currentPrice = trade.type === 'buy' ? symData.bid : symData.ask;
+      if (!currentPrice || currentPrice <= 0 || isNaN(currentPrice)) return;
+
       let hitTP = false;
       let hitSL = false;
 
-      const numericTp = trade.takeProfit != null ? Number(trade.takeProfit) : (trade.tp && !isNaN(Number(trade.tp)) ? Number(trade.tp) : null);
-      const numericSl = trade.stopLoss != null ? Number(trade.stopLoss) : (trade.sl && !isNaN(Number(trade.sl)) ? Number(trade.sl) : null);
+      const numericTp = trade.takeProfit != null && trade.takeProfit !== '' ? Number(trade.takeProfit) : (trade.tp && trade.tp !== '' && !isNaN(Number(trade.tp)) ? Number(trade.tp) : null);
+      const numericSl = trade.stopLoss != null && trade.stopLoss !== '' ? Number(trade.stopLoss) : (trade.sl && trade.sl !== '' && !isNaN(Number(trade.sl)) ? Number(trade.sl) : null);
 
-      if (numericTp !== null && numericTp > 0) {
+      if (numericTp !== null && numericTp > 0 && !isNaN(numericTp)) {
         if (trade.type === 'buy' && currentPrice >= numericTp) hitTP = true;
         if (trade.type === 'sell' && currentPrice <= numericTp) hitTP = true;
       }
 
-      if (numericSl !== null && numericSl > 0) {
+      if (numericSl !== null && numericSl > 0 && !isNaN(numericSl)) {
         if (trade.type === 'buy' && currentPrice <= numericSl) hitSL = true;
         if (trade.type === 'sell' && currentPrice >= numericSl) hitSL = true;
       }
@@ -388,66 +393,46 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   useEffect(() => {
     if (openTrades.length === 0 || !selectedAccount || selectedAccount.status !== 'active') return;
 
-    // Daily Drawdown Protection Check
+    // Daily Drawdown Protection Check (Breaches account status, does NOT randomly close unrelated positions)
     const dailyLimit = selectedAccount.dailyDrawdownLimit || (selectedAccount.startingBalance * 0.05);
     const dailyStarting = selectedAccount.dailyStartingBalance || selectedAccount.startingBalance;
     const currentDailyLoss = dailyStarting - metrics.equity;
 
-    if (currentDailyLoss >= dailyLimit) {
-      openTrades.forEach(async (trade) => {
-        const symData = priceEngine[trade.symbol];
-        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
-        console.warn(`Daily drawdown breached! Force-closing trade ${trade.id} under Daily Drawdown Protection.`);
-        await executeDirectClose(
-          trade,
-          currentPrice,
-          'Daily Drawdown Protection',
-          'Daily Drawdown Protection',
-          'Daily Loss Limit Exceeded',
-          true
-        );
-      });
+    if (currentDailyLoss >= dailyLimit && selectedAccount.startingBalance > 0 && metrics.equity > 0) {
+      console.warn(`Daily drawdown limit breached on account #${selectedAccount.login || selectedAccount.id}`);
       handleBreachAccount('Daily Loss Limit Exceeded');
       return;
     }
 
-    // Max Drawdown Protection Check
+    // Max Drawdown Protection Check (Breaches account status, does NOT randomly close unrelated positions)
     const maxLimit = selectedAccount.maxDrawdownLimit || (selectedAccount.startingBalance * 0.10);
     const currentOverallLoss = selectedAccount.startingBalance - metrics.equity;
 
-    if (currentOverallLoss >= maxLimit) {
-      openTrades.forEach(async (trade) => {
-        const symData = priceEngine[trade.symbol];
-        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
-        console.warn(`Max drawdown breached! Force-closing trade ${trade.id} under Max Drawdown Protection.`);
-        await executeDirectClose(
-          trade,
-          currentPrice,
-          'Max Drawdown Protection',
-          'Max Drawdown Protection',
-          'Max Drawdown Limit Exceeded',
-          true
-        );
-      });
+    if (currentOverallLoss >= maxLimit && selectedAccount.startingBalance > 0 && metrics.equity > 0) {
+      console.warn(`Max drawdown limit breached on account #${selectedAccount.login || selectedAccount.id}`);
       handleBreachAccount('Max Drawdown Limit Exceeded');
       return;
     }
 
-    // Margin Protection Check (Insufficient Margin / Stop Out)
-    if (metrics.freeMargin < 0) {
-      openTrades.forEach(async (trade) => {
-        const symData = priceEngine[trade.symbol];
-        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
-        console.warn(`Insufficient margin! Force-closing trade ${trade.id} under Margin Protection.`);
-        await executeDirectClose(
-          trade,
-          currentPrice,
-          'Margin Protection',
-          'Margin Protection',
-          'Insufficient Free Margin / Stop Out',
-          true
-        );
-      });
+    // Margin Protection Check (Triggers ONLY when free margin is strictly negative and margin requirements violated)
+    if (metrics.marginUsed > 0 && metrics.freeMargin < 0 && openTrades.length > 0) {
+      const sortedByLoss = [...openTrades].sort((a, b) => (a.profit || 0) - (b.profit || 0));
+      const worstTrade = sortedByLoss[0];
+      if (worstTrade) {
+        const symData = priceEngine[worstTrade.symbol];
+        const currentPrice = symData ? (worstTrade.type === 'buy' ? symData.bid : symData.ask) : worstTrade.openPrice;
+        if (currentPrice > 0) {
+          console.warn(`Margin level violated! Liquidating position ${worstTrade.id} under Margin Protection.`);
+          executeDirectClose(
+            worstTrade,
+            currentPrice,
+            'Margin Protection',
+            'Margin Protection',
+            'Insufficient Free Margin / Stop Out',
+            true
+          );
+        }
+      }
     }
   }, [metrics.equity, metrics.freeMargin, openTrades, selectedAccount]);
 
@@ -492,6 +477,19 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
 
       // If system force-closed position, show pop-up notification modal & log in Firestore notifications
       if (isSystemForceClose) {
+        // Log permanently in auto_close_debug_logs collection
+        await logAutoCloseDebug({
+          accountId: selectedAccount.id,
+          accountNumber: selectedAccount.login || selectedAccount.id,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          entryPrice: trade.openPrice,
+          exitPrice: closePrice,
+          closeReason: actualReason,
+          triggeredRule: actualRule,
+          userId: selectedAccount.userId || userId
+        });
+
         setForceCloseNotifModal({
           isOpen: true,
           tradeId: trade.id,
@@ -742,6 +740,19 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
           phase: currentPhase,
           passedAt: currentStatus === 'passed' ? now : accData.passedAt || null,
           ...(accData.accountType === 'instant_bolt' ? { lastTradeClosedAt: now } : {})
+        });
+
+        // Audit Log System (Requirement 8)
+        logAccountAuditChange({
+          accountId: accData.id,
+          accountNumber: accData.login || accData.id,
+          userId: accData.userId,
+          previousBalance: accData.balance,
+          newBalance: newBalance,
+          previousStatus: accData.status,
+          newStatus: currentStatus,
+          sourceOfChange: 'TRADE_CLOSE',
+          details: `Closed trade #${trade.id} on ${trade.symbol}. Realized PnL: $${finalProfit}`
         });
 
         if (currentStatus === 'passed') {
@@ -2351,13 +2362,31 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                   <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider font-mono">
                     Simulated Trade History
                   </h3>
-                  <button
-                    onClick={() => setShowAuditReportModal(true)}
-                    className="px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/20 text-blue-400 rounded-lg text-xs font-bold font-mono transition-all flex items-center space-x-1.5"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                    <span>Auto-Close Audit Report</span>
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => {
+                        const nextState = !autoCloseDebugMode;
+                        setAutoCloseDebugState(nextState);
+                        setAutoCloseDebugMode(nextState);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all flex items-center space-x-1.5 border cursor-pointer ${
+                        autoCloseDebugMode 
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20' 
+                          : 'bg-slate-800/50 border-white/10 text-slate-400 hover:bg-slate-800'
+                      }`}
+                      title="Toggle Auto Close Debug Logging Mode"
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      <span>AUTO CLOSE DEBUG: {autoCloseDebugMode ? 'ON' : 'OFF'}</span>
+                    </button>
+                    <button
+                      onClick={() => setShowAuditReportModal(true)}
+                      className="px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/20 text-blue-400 rounded-lg text-xs font-bold font-mono transition-all flex items-center space-x-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Auto-Close Audit Report</span>
+                    </button>
+                  </div>
                 </div>
 
                 {closedTrades.length === 0 ? (

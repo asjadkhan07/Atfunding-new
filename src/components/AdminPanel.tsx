@@ -3,7 +3,8 @@ import * as LucideIcons from 'lucide-react';
 import { 
   Users, Layers, DollarSign, Award, Gift, Ticket, ListFilter, Check, X, Plus, Trash2, Shield, RefreshCw,
   Coins, Search, Filter, Image as ImageIcon, AlertTriangle, AlertCircle, Eye, HelpCircle, Mail, MessageSquare, Settings,
-  Activity, Clock, Tag, Share2, Bell, Edit3, Upload, FileText, Send, Download, Sparkles, Sliders, ExternalLink
+  Activity, Clock, Tag, Share2, Bell, Edit3, Upload, FileText, Send, Download, Sparkles, Sliders, ExternalLink,
+  Database, ShieldAlert, Copy
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -25,9 +26,12 @@ import { getSpikeConfig, setSpikeConfig, resetSpikeConfig, subscribeToMarketEven
 import { calculateTradePnL } from '../core/pnlEngine';
 import { executeClosePosition } from '../core/positionEngine';
 import { auditAccount, calculateDynamicAccountMetrics, calculateAccountRiskScore, detectGamblingBehavior, getMaxLotSize, getProfitableTradingDays, AuditReportItem } from '../core/riskEngine';
+import { logAccountAuditChange, verifyAccountIntegrity } from '../utils/auditLogger';
+import { createFirestoreBackup, checkAndRunDailyAutoBackup, listFirestoreBackups, restoreFirestoreBackup, FirestoreBackupRecord } from '../utils/backupManager';
+import { getAutoCloseDebugMode, setAutoCloseDebugMode, getAutoCloseDebugLogs, AutoCloseDebugLog } from '../utils/autoCloseLogger';
 
 export default function AdminPanel() {
-  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control' | 'certificates' | 'leaderboard'>('stats');
+  const [activeTab, setActiveTab] = useState<'stats' | 'search' | 'users' | 'orders' | 'accounts' | 'active_accounts' | 'payouts' | 'coupons' | 'trades' | 'payment_settings' | 'rule_settings' | 'rule_violations' | 'broadcast' | 'cms' | 'settings' | 'social_links' | 'support_tickets' | 'announcements' | 'offers_availability' | 'tasks_rewards' | 'email_center' | 'challenge_reviews' | 'referral_withdrawals' | 'kyc_verification' | 'market_control' | 'certificates' | 'leaderboard' | 'database_backups' | 'auto_close_debug'>('stats');
 
   // Active Accounts Management States
   const [accountSearchQuery, setAccountSearchQuery] = useState('');
@@ -53,6 +57,78 @@ export default function AdminPanel() {
   const [isRepairingAll, setIsRepairingAll] = useState(false);
   const [auditNoticeMsg, setAuditNoticeMsg] = useState('');
 
+  // Database Backup States
+  const [backupsList, setBackupsList] = useState<FirestoreBackupRecord[]>([]);
+  const [isCreatingBackup, setIsCreatingBackup] = useState(false);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [selectedBackupToRestore, setSelectedBackupToRestore] = useState<FirestoreBackupRecord | null>(null);
+  const [backupNoticeMsg, setBackupNoticeMsg] = useState('');
+
+  // Auto Close Debugging States
+  const [autoCloseDebugMode, setAutoCloseDebugState] = useState<boolean>(getAutoCloseDebugMode());
+  const [autoCloseDebugLogs, setAutoCloseDebugLogs] = useState<AutoCloseDebugLog[]>([]);
+  const [isLoadingAutoCloseLogs, setIsLoadingAutoCloseLogs] = useState(false);
+  const [autoCloseFilterQuery, setAutoCloseFilterQuery] = useState('');
+
+  // Auto-run daily Firestore export check on mount
+  useEffect(() => {
+    checkAndRunDailyAutoBackup().then((ran) => {
+      if (ran) console.log("Daily Firestore backup auto-check completed.");
+      refreshBackups();
+    });
+    fetchAutoCloseDebugLogs();
+  }, []);
+
+  const refreshBackups = async () => {
+    const list = await listFirestoreBackups();
+    setBackupsList(list);
+  };
+
+  const fetchAutoCloseDebugLogs = async () => {
+    setIsLoadingAutoCloseLogs(true);
+    try {
+      const logs = await getAutoCloseDebugLogs();
+      setAutoCloseDebugLogs(logs);
+    } catch (e) {
+      console.warn("Failed to fetch auto close debug logs:", e);
+    } finally {
+      setIsLoadingAutoCloseLogs(false);
+    }
+  };
+
+  const handleManualBackup = async () => {
+    setIsCreatingBackup(true);
+    setBackupNoticeMsg("Creating full Firestore snapshot export...");
+    try {
+      const record = await createFirestoreBackup('MANUAL');
+      setBackupNoticeMsg(`Backup snapshot created successfully! (${record.counts?.total || 0} total records archived)`);
+      await refreshBackups();
+    } catch (e: any) {
+      setBackupNoticeMsg(`Backup failed: ${e.message || 'Error creating snapshot'}`);
+    } finally {
+      setIsCreatingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async (backup: FirestoreBackupRecord) => {
+    setIsRestoringBackup(true);
+    setBackupNoticeMsg(`Restoring backup ${backup.id}... Please do not navigate away.`);
+    try {
+      const res = await restoreFirestoreBackup(backup);
+      const totalRestored = Object.values(res.restoredCounts || {}).reduce((a, b) => a + b, 0);
+      if (!res.errors || res.errors.length === 0) {
+        setBackupNoticeMsg(`Restoration Complete! ${totalRestored} records restored into Firestore.`);
+        setSelectedBackupToRestore(null);
+      } else {
+        setBackupNoticeMsg(`Restoration completed with ${res.errors.length} warnings. Restored ${totalRestored} records.`);
+      }
+    } catch (e: any) {
+      setBackupNoticeMsg(`Restoration Failed: ${e.message}`);
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  };
+
   // Computes audit reports across all active accounts directly from trade history
   const runSystemAudit = (): AuditReportItem[] => {
     return accounts.map((acc) => auditAccount(acc, trades, []));
@@ -70,6 +146,16 @@ export default function AdminPanel() {
         equity: reportItem.expectedEquity,
         status: reportItem.expectedStatus,
         updatedAt: new Date().toISOString()
+      });
+      await logAccountAuditChange({
+        accountId: reportItem.accountId,
+        accountNumber: reportItem.login,
+        previousBalance: reportItem.currentStoredBalance,
+        newBalance: reportItem.expectedBalance,
+        previousStatus: reportItem.storedStatus,
+        newStatus: reportItem.expectedStatus,
+        sourceOfChange: 'ADMIN_REPAIR',
+        details: `Single account audit repair applied by admin.`
       });
       setAuditNoticeMsg(`Successfully repaired Account #${reportItem.login}: Balance set to $${reportItem.expectedBalance.toLocaleString()}, Status: ${reportItem.expectedStatus}`);
     } catch (err: any) {
@@ -98,6 +184,16 @@ export default function AdminPanel() {
           equity: item.expectedEquity,
           status: item.expectedStatus,
           updatedAt: new Date().toISOString()
+        });
+        await logAccountAuditChange({
+          accountId: item.accountId,
+          accountNumber: item.login,
+          previousBalance: item.currentStoredBalance,
+          newBalance: item.expectedBalance,
+          previousStatus: item.storedStatus,
+          newStatus: item.expectedStatus,
+          sourceOfChange: 'ADMIN_BATCH_REPAIR',
+          details: `Batch system audit repair applied by admin.`
         });
         repairedCount++;
       }
@@ -2258,7 +2354,9 @@ export default function AdminPanel() {
           { id: 'cms', label: 'Policy CMS', icon: ImageIcon },
           { id: 'offers_availability', label: 'Offers & Availability', icon: Tag },
           { id: 'tasks_rewards', label: 'Tasks & Rewards', icon: Coins },
-          { id: 'email_center', label: 'Email Automation', icon: Mail }
+          { id: 'email_center', label: 'Email Automation', icon: Mail },
+          { id: 'database_backups', label: '💾 Database Backups', icon: Database },
+          { id: 'auto_close_debug', label: '🛠️ Auto-Close Debug', icon: ShieldAlert }
         ].map(tab => (
           <button
             key={tab.id}
@@ -11434,6 +11532,301 @@ export default function AdminPanel() {
                 </p>
               </div>
               <EmailCenter users={users} />
+            </div>
+          )}
+
+          {/* 27. DATABASE BACKUPS & RESTORE TAB */}
+          {activeTab === 'database_backups' && (
+            <div className="space-y-6 animate-fade-in text-left">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <Database className="w-6 h-6 text-emerald-400" />
+                    <h2 className="text-xl font-black text-white uppercase tracking-wider font-mono">
+                      Firestore Snapshot & Backup Manager
+                    </h2>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Automatic daily Firestore backup exports for Users, Accounts, Trades, Payouts, and Coupons. Guaranteed persistence to ensure no trader data is lost.
+                  </p>
+                </div>
+                <button
+                  onClick={handleManualBackup}
+                  disabled={isCreatingBackup}
+                  className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-emerald-500/20 transition-all flex items-center space-x-2 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isCreatingBackup ? 'animate-spin' : ''}`} />
+                  <span>{isCreatingBackup ? 'Creating Backup...' : 'Create Immediate Snapshot Backup'}</span>
+                </button>
+              </div>
+
+              {backupNoticeMsg && (
+                <div className={`p-4 rounded-2xl border text-xs font-mono font-bold flex items-center justify-between ${
+                  backupNoticeMsg.includes('Failed') || backupNoticeMsg.includes('Error')
+                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                }`}>
+                  <span>{backupNoticeMsg}</span>
+                  <button onClick={() => setBackupNoticeMsg('')} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+              )}
+
+              {/* Status Overview Banner */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-4 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold">Auto-Backup Engine</div>
+                  <div className="text-sm font-black text-emerald-400 flex items-center space-x-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span>ACTIVE (Every 24 Hours)</span>
+                  </div>
+                </div>
+                <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-4 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold">Total Backups Archived</div>
+                  <div className="text-lg font-black text-white font-mono">{backupsList.length} Snapshots</div>
+                </div>
+                <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-4 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold">Latest Backup Date</div>
+                  <div className="text-xs font-bold text-slate-300 font-mono">
+                    {backupsList.length > 0 ? new Date(backupsList[0].timestamp).toLocaleString() : 'No backups yet'}
+                  </div>
+                </div>
+                <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-4 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest font-mono font-bold">Protected Collections</div>
+                  <div className="text-xs font-bold text-blue-400 font-mono">users, accounts, trades, payouts, coupons</div>
+                </div>
+              </div>
+
+              {/* Backup History Records */}
+              <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-5 space-y-4 shadow-xl">
+                <h3 className="text-xs font-extrabold text-slate-300 uppercase tracking-wider font-mono">
+                  Available Snapshot Backups
+                </h3>
+
+                {backupsList.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 font-mono">
+                    No backup snapshots found. Click "Create Immediate Snapshot Backup" above to generate your first complete backup.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left min-w-[800px] font-mono text-xs">
+                      <thead>
+                        <tr className="text-slate-500 border-b border-white/10 pb-2 uppercase text-[10px] tracking-wider">
+                          <th className="py-3 px-2">Snapshot ID</th>
+                          <th className="py-3 px-2">Timestamp</th>
+                          <th className="py-3 px-2">Source</th>
+                          <th className="py-3 px-2">Total Records</th>
+                          <th className="py-3 px-2">Collection Breakdown</th>
+                          <th className="py-3 px-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 text-slate-300">
+                        {backupsList.map((bk) => (
+                          <tr key={bk.id} className="hover:bg-white/[0.02] transition-colors">
+                            <td className="py-3 px-2 font-bold text-white">{bk.id}</td>
+                            <td className="py-3 px-2 text-slate-400">{new Date(bk.timestamp).toLocaleString()}</td>
+                            <td className="py-3 px-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                bk.type === 'AUTO_DAILY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                              }`}>
+                                {bk.type || 'MANUAL'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-2 font-bold text-emerald-400">{bk.counts?.total || 0}</td>
+                            <td className="py-3 px-2 text-[11px] text-slate-400">
+                              U: {bk.counts?.users || 0} | A: {bk.counts?.accounts || 0} | T: {bk.counts?.trades || 0} | P: {bk.counts?.payouts || 0} | C: {bk.counts?.coupons || 0}
+                            </td>
+                            <td className="py-3 px-2 text-right">
+                              <button
+                                onClick={() => setSelectedBackupToRestore(bk)}
+                                disabled={isRestoringBackup}
+                                className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-white border border-amber-500/30 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                              >
+                                Restore
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* RESTORE CONFIRMATION MODAL */}
+          {selectedBackupToRestore && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-[#0b0f19] border border-amber-500/30 rounded-3xl w-full max-w-lg p-6 space-y-4 animate-fade-in relative text-left shadow-2xl">
+                <div className="flex items-center space-x-2 text-amber-400">
+                  <AlertTriangle className="w-6 h-6" />
+                  <h3 className="text-base font-black uppercase tracking-wider">
+                    Confirm Database Restoration
+                  </h3>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  You are about to restore Firestore database state from backup snapshot <strong className="text-white">{selectedBackupToRestore.id}</strong> (created on {new Date(selectedBackupToRestore.timestamp).toLocaleString()}).
+                </p>
+
+                <div className="bg-black/40 border border-white/5 rounded-xl p-3 font-mono text-xs text-slate-300 space-y-1">
+                  <div>• Total Records to Restore: <strong className="text-emerald-400">{selectedBackupToRestore.counts?.total || 0}</strong></div>
+                  <div>• Users: {selectedBackupToRestore.counts?.users || 0}</div>
+                  <div>• Accounts: {selectedBackupToRestore.counts?.accounts || 0}</div>
+                  <div>• Trades: {selectedBackupToRestore.counts?.trades || 0}</div>
+                  <div>• Payouts: {selectedBackupToRestore.counts?.payouts || 0}</div>
+                  <div>• Coupons: {selectedBackupToRestore.counts?.coupons || 0}</div>
+                </div>
+
+                <p className="text-[11px] text-amber-300/80 italic">
+                  Note: This operation will write all archived documents back to Firestore and invalidate all local memory caches to guarantee exact account balances and trade persistence.
+                </p>
+
+                <div className="flex justify-end space-x-3 pt-2">
+                  <button
+                    onClick={() => setSelectedBackupToRestore(null)}
+                    disabled={isRestoringBackup}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleRestoreBackup(selectedBackupToRestore)}
+                    disabled={isRestoringBackup}
+                    className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-black font-extrabold rounded-xl text-xs shadow-lg shadow-amber-500/25 transition-all flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {isRestoringBackup ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
+                    <span>{isRestoringBackup ? 'Restoring Snapshot...' : 'Confirm & Restore Backup'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 28. AUTO CLOSE DEBUG TAB */}
+          {activeTab === 'auto_close_debug' && (
+            <div className="space-y-6 animate-fade-in text-left">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <ShieldAlert className="w-6 h-6 text-rose-400" />
+                    <h2 className="text-xl font-black text-white uppercase tracking-wider font-mono">
+                      Auto-Close Debug Log & Monitoring Engine
+                    </h2>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Real-time audit log of every system force-closed trade with complete details including Account ID, Trade ID, Entry/Exit Prices, Close Reason, and Triggered Rules.
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-3">
+                  <button
+                    onClick={() => {
+                      const nextMode = !autoCloseDebugMode;
+                      setAutoCloseDebugState(nextMode);
+                      setAutoCloseDebugMode(nextMode);
+                    }}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold font-mono transition-all flex items-center space-x-2 border cursor-pointer ${
+                      autoCloseDebugMode 
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                        : 'bg-slate-800 border-white/10 text-slate-400'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${autoCloseDebugMode ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`}></span>
+                    <span>AUTO CLOSE DEBUG MODE: {autoCloseDebugMode ? 'ENABLED' : 'DISABLED'}</span>
+                  </button>
+
+                  <button
+                    onClick={fetchAutoCloseDebugLogs}
+                    disabled={isLoadingAutoCloseLogs}
+                    className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAutoCloseLogs ? 'animate-spin' : ''}`} />
+                    <span>Refresh Logs</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Search & Filter */}
+              <div className="flex items-center space-x-3 bg-[#0b0f19] border border-white/5 rounded-2xl p-3">
+                <Search className="w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Filter logs by Account ID, Trade ID, Symbol, or Reason..."
+                  value={autoCloseFilterQuery}
+                  onChange={(e) => setAutoCloseFilterQuery(e.target.value)}
+                  className="bg-transparent text-xs text-white placeholder-slate-500 outline-none w-full font-mono"
+                />
+              </div>
+
+              {/* Auto Close Debug Logs Table */}
+              <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-5 space-y-4 shadow-xl">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-xs font-extrabold text-slate-300 uppercase tracking-wider font-mono">
+                    Recorded Auto-Close Debug Events ({autoCloseDebugLogs.length})
+                  </h3>
+                </div>
+
+                {isLoadingAutoCloseLogs ? (
+                  <div className="py-12 text-center text-xs text-slate-400 font-mono">
+                    Loading auto-close debug records...
+                  </div>
+                ) : autoCloseDebugLogs.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-slate-500 font-mono">
+                    No auto-close debug logs recorded yet. All force-closed positions will be automatically captured here.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left min-w-[900px] font-mono text-xs">
+                      <thead>
+                        <tr className="text-slate-500 border-b border-white/10 pb-2 uppercase text-[10px] tracking-wider">
+                          <th className="py-3 px-2">Timestamp</th>
+                          <th className="py-3 px-2">Account ID</th>
+                          <th className="py-3 px-2">Trade ID</th>
+                          <th className="py-3 px-2">Symbol</th>
+                          <th className="py-3 px-2">Entry Price</th>
+                          <th className="py-3 px-2">Exit Price</th>
+                          <th className="py-3 px-2">Close Reason</th>
+                          <th className="py-3 px-2">Triggered Rule</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 text-slate-300">
+                        {autoCloseDebugLogs
+                          .filter((log) => {
+                            if (!autoCloseFilterQuery.trim()) return true;
+                            const q = autoCloseFilterQuery.toLowerCase();
+                            return (
+                              log.accountId?.toLowerCase().includes(q) ||
+                              log.accountNumber?.toLowerCase().includes(q) ||
+                              log.tradeId?.toLowerCase().includes(q) ||
+                              log.symbol?.toLowerCase().includes(q) ||
+                              log.closeReason?.toLowerCase().includes(q) ||
+                              log.triggeredRule?.toLowerCase().includes(q)
+                            );
+                          })
+                          .map((log) => (
+                            <tr key={log.id} className="hover:bg-white/[0.02] transition-colors">
+                              <td className="py-3 px-2 text-slate-400 whitespace-nowrap">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </td>
+                              <td className="py-3 px-2 font-bold text-white">{log.accountNumber || log.accountId}</td>
+                              <td className="py-3 px-2 text-blue-400 font-bold">#{log.tradeId}</td>
+                              <td className="py-3 px-2 font-bold text-amber-300">{log.symbol}</td>
+                              <td className="py-3 px-2">${log.entryPrice}</td>
+                              <td className="py-3 px-2 font-bold text-white">${log.exitPrice}</td>
+                              <td className="py-3 px-2">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-300 border border-rose-500/20">
+                                  {log.closeReason}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 text-slate-400 text-[11px]">{log.triggeredRule}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

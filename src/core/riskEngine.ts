@@ -236,17 +236,26 @@ export function calculateDynamicAccountMetrics(
   closedTrades: any[],
   openTrades: any[] = []
 ) {
-  const startingBalance = Number(account.startingBalance || account.size || 10000);
+  const startingBalance = Number(account.startingBalance || account.size || account.balance || 10000);
 
   // 1. Total Closed PnL
   let totalClosedPnL = 0;
-  closedTrades.forEach((t) => {
-    totalClosedPnL += Number(t.profit || 0);
-  });
+  const hasClosedTrades = Array.isArray(closedTrades) && closedTrades.length > 0;
+  
+  if (hasClosedTrades) {
+    closedTrades.forEach((t) => {
+      totalClosedPnL += Number(t.profit || 0);
+    });
+  }
   totalClosedPnL = Number(totalClosedPnL.toFixed(2));
 
-  // 2. Expected Balance
-  const expectedBalance = Number((startingBalance + totalClosedPnL).toFixed(2));
+  // 2. Expected Balance - Preserve account.balance if closedTrades is empty/unsupplied
+  let expectedBalance = Number(account.balance);
+  if (isNaN(expectedBalance) || expectedBalance <= 0 || hasClosedTrades) {
+    expectedBalance = hasClosedTrades
+      ? Number((startingBalance + totalClosedPnL).toFixed(2))
+      : (Number(account.balance) || startingBalance);
+  }
 
   // 3. Floating PnL from Open Trades
   let totalFloatingPnL = 0;

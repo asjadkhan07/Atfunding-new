@@ -45,13 +45,24 @@ export default function App() {
 
           // Requirement 4: User profile data cached for 5 minutes (300,000 ms)
           let profileData: UserProfile | null = null;
+          let profileFetchError = false;
+
           try {
             profileData = await getDocCached<UserProfile>(`user_profile_${authUser.uid}`, async () => {
               const snap = await getDoc(doc(db, 'users', authUser.uid));
               return snap.exists() ? (snap.data() as UserProfile) : null;
             }, 5 * 60 * 1000, false, 'App.tsx');
           } catch (userDocError) {
-            console.warn("Failed to fetch user profile, using fallback profile creation:", userDocError);
+            profileFetchError = true;
+            console.warn("Firestore user profile query unavailable (network/quota error):", userDocError);
+            
+            // Try recovering profile from local snapshot
+            try {
+              const storedSnap = localStorage.getItem(`user_profile_snapshot_${authUser.uid}`);
+              if (storedSnap) {
+                profileData = JSON.parse(storedSnap);
+              }
+            } catch (e) {}
           }
 
           const finalRole = isUserConfiguredAdmin ? 'admin' : 'trader';
@@ -66,9 +77,12 @@ export default function App() {
             }
 
             setUserProfile(updatedProfile);
+            try {
+              localStorage.setItem(`user_profile_snapshot_${authUser.uid}`, JSON.stringify(updatedProfile));
+            } catch (e) {}
             
             // Sync role to Firestore if it changed
-            if (profileData.role !== finalRole) {
+            if (profileData.role !== finalRole && !profileFetchError) {
               try {
                 await setDoc(doc(db, 'users', authUser.uid), { role: finalRole }, { merge: true });
                 console.log(`Synced user role to ${finalRole} in Firestore.`);
@@ -88,10 +102,10 @@ export default function App() {
             } else {
               setScreen('dashboard');
             }
-          } else {
-            // Requirement 3 & 5: Ensure permanent affiliate code reuse
+          } else if (!profileFetchError) {
+            // ONLY create initial profile if fetch succeeded and document genuinely does not exist
             const permanentAffiliateCode = await ensureUserAffiliateCode({ uid: authUser.uid, email: authUser.email || '' });
-            const fallback: UserProfile = {
+            const newProfile: UserProfile = {
               uid: authUser.uid,
               email: authUser.email || '',
               displayName: authUser.displayName || authUser.email?.split('@')[0] || 'Trader',
@@ -101,11 +115,14 @@ export default function App() {
               affiliateCode: permanentAffiliateCode,
               createdAt: new Date().toISOString()
             };
-            setUserProfile(fallback);
+            setUserProfile(newProfile);
+            try {
+              localStorage.setItem(`user_profile_snapshot_${authUser.uid}`, JSON.stringify(newProfile));
+            } catch (e) {}
             
             // Create user profile in Firestore
             try {
-              await setDoc(doc(db, 'users', authUser.uid), fallback);
+              await setDoc(doc(db, 'users', authUser.uid), newProfile);
               console.log("Created user profile in Firestore.");
             } catch (createError) {
               console.warn("Could not create user profile in Firestore:", createError);

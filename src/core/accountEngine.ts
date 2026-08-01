@@ -67,9 +67,9 @@ export function recalculateAccountMetrics(
 ): AccountMetrics {
   let balance = account.balance;
 
-  // Requirement: Recalculate account balance directly from trade history: Current Balance = Initial Balance + Total Closed PnL
-  if (closedTrades && Array.isArray(closedTrades)) {
-    const startingBal = Number(account.startingBalance || account.size || 10000);
+  // Only recalculate balance from closedTrades if closedTrades is non-empty
+  if (closedTrades && Array.isArray(closedTrades) && closedTrades.length > 0) {
+    const startingBal = Number(account.startingBalance || account.size || account.balance || 10000);
     const closedPnL = closedTrades.reduce((sum, trade) => sum + (Number(trade.profit) || 0), 0);
     balance = Number((startingBal + closedPnL).toFixed(2));
   }
