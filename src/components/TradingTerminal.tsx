@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, Square, TrendingUp, TrendingDown, RefreshCw, AlertCircle, CheckCircle, 
-  Info, ShieldAlert, Sparkles, Trophy, Percent, Wallet, Maximize2, Minimize2, Coins, Lock, Clock, Award, AlertTriangle
+  Info, ShieldAlert, Sparkles, Trophy, Percent, Wallet, Maximize2, Minimize2, Coins, Lock, Clock, Award, AlertTriangle,
+  Edit3, Sliders, FileText, Copy, Check
 } from 'lucide-react';
 import { TradingAccount, Trade, LivePrice } from '../types';
 import { db } from '../firebase';
@@ -116,6 +117,32 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
   const [partialCloseTrade, setPartialCloseTrade] = useState<Trade | null>(null);
   const [partialLots, setPartialLots] = useState<number>(0.1);
   const [partialCloseError, setPartialCloseError] = useState('');
+
+  // Modify SL/TP modal states
+  const [modifyingSlTpTrade, setModifyingSlTpTrade] = useState<Trade | null>(null);
+  const [editSlInput, setEditSlInput] = useState<string>('');
+  const [editTpInput, setEditTpInput] = useState<string>('');
+  const [editSlTpError, setEditSlTpError] = useState<string>('');
+  const [isSavingSlTp, setIsSavingSlTp] = useState<boolean>(false);
+
+  // System Force-Closed Notification Modal State
+  const [forceCloseNotifModal, setForceCloseNotifModal] = useState<{
+    isOpen: boolean;
+    tradeId: string;
+    symbol: string;
+    type: string;
+    lots: number;
+    closePrice: number;
+    profit: number;
+    closeReason: string;
+    triggeredRule: string;
+    closeTime: string;
+    accountId: string;
+  } | null>(null);
+
+  // Auto-Close Audit Report Modal state
+  const [showAuditReportModal, setShowAuditReportModal] = useState<boolean>(false);
+  const [copiedReport, setCopiedReport] = useState<boolean>(false);
 
   // Live rule settings, profile, and violations states from Firestore
   const [userProfile, setUserProfile] = useState<any>(null);
@@ -322,7 +349,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
     return () => clearInterval(interval);
   }, [openTrades, selectedAccount?.id, selectedAccount?.status]);
 
-  // Automated Real-time TP/SL check (reading strictly from centralized priceEngine)
+  // Automated Real-time TP/SL engine (reading strictly from centralized priceEngine)
   useEffect(() => {
     if (openTrades.length === 0 || !selectedAccount || selectedAccount.status !== 'active') return;
 
@@ -334,53 +361,165 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       let hitTP = false;
       let hitSL = false;
 
-      if (trade.tp && trade.tp > 0) {
-        if (trade.type === 'buy' && currentPrice >= trade.tp) hitTP = true;
-        if (trade.type === 'sell' && currentPrice <= trade.tp) hitTP = true;
+      const numericTp = trade.takeProfit != null ? Number(trade.takeProfit) : (trade.tp && !isNaN(Number(trade.tp)) ? Number(trade.tp) : null);
+      const numericSl = trade.stopLoss != null ? Number(trade.stopLoss) : (trade.sl && !isNaN(Number(trade.sl)) ? Number(trade.sl) : null);
+
+      if (numericTp !== null && numericTp > 0) {
+        if (trade.type === 'buy' && currentPrice >= numericTp) hitTP = true;
+        if (trade.type === 'sell' && currentPrice <= numericTp) hitTP = true;
       }
 
-      if (trade.sl && trade.sl > 0) {
-        if (trade.type === 'buy' && currentPrice <= trade.sl) hitSL = true;
-        if (trade.type === 'sell' && currentPrice >= trade.sl) hitSL = true;
+      if (numericSl !== null && numericSl > 0) {
+        if (trade.type === 'buy' && currentPrice <= numericSl) hitSL = true;
+        if (trade.type === 'sell' && currentPrice >= numericSl) hitSL = true;
       }
 
       if (hitTP || hitSL) {
-        const triggerPrice = hitTP ? (trade.tp || currentPrice) : (trade.sl || currentPrice);
-        const logMsg = hitTP ? 'Take Profit executed' : 'Stop Loss executed';
-        console.log(`Auto-closing trade ${trade.id} on ${trade.symbol}: ${logMsg} at ${triggerPrice}`);
-        await executeDirectClose(trade, triggerPrice, logMsg);
+        const triggerPrice = hitTP ? (numericTp || currentPrice) : (numericSl || currentPrice);
+        const reason = hitTP ? 'Take Profit Hit' : 'Stop Loss Hit';
+        const rule = hitTP ? 'Take Profit Target Price Triggered' : 'Stop Loss Risk Boundary Triggered';
+        console.log(`Auto-closing trade ${trade.id} on ${trade.symbol}: ${reason} at ${triggerPrice}`);
+        await executeDirectClose(trade, triggerPrice, reason, reason, rule, true);
       }
     });
   }, [symbols, openTrades]);
 
-  // Execute direct close with designated price (TP/SL/Liquidation)
-  const executeDirectClose = async (trade: Trade, closePrice: number, comment?: string) => {
+  // Automated Real-time Protection Monitors (Daily Drawdown, Max Drawdown, Margin Protection, Account Breach)
+  useEffect(() => {
+    if (openTrades.length === 0 || !selectedAccount || selectedAccount.status !== 'active') return;
+
+    // Daily Drawdown Protection Check
+    const dailyLimit = selectedAccount.dailyDrawdownLimit || (selectedAccount.startingBalance * 0.05);
+    const dailyStarting = selectedAccount.dailyStartingBalance || selectedAccount.startingBalance;
+    const currentDailyLoss = dailyStarting - metrics.equity;
+
+    if (currentDailyLoss >= dailyLimit) {
+      openTrades.forEach(async (trade) => {
+        const symData = priceEngine[trade.symbol];
+        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
+        console.warn(`Daily drawdown breached! Force-closing trade ${trade.id} under Daily Drawdown Protection.`);
+        await executeDirectClose(
+          trade,
+          currentPrice,
+          'Daily Drawdown Protection',
+          'Daily Drawdown Protection',
+          'Daily Loss Limit Exceeded',
+          true
+        );
+      });
+      handleBreachAccount('Daily Loss Limit Exceeded');
+      return;
+    }
+
+    // Max Drawdown Protection Check
+    const maxLimit = selectedAccount.maxDrawdownLimit || (selectedAccount.startingBalance * 0.10);
+    const currentOverallLoss = selectedAccount.startingBalance - metrics.equity;
+
+    if (currentOverallLoss >= maxLimit) {
+      openTrades.forEach(async (trade) => {
+        const symData = priceEngine[trade.symbol];
+        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
+        console.warn(`Max drawdown breached! Force-closing trade ${trade.id} under Max Drawdown Protection.`);
+        await executeDirectClose(
+          trade,
+          currentPrice,
+          'Max Drawdown Protection',
+          'Max Drawdown Protection',
+          'Max Drawdown Limit Exceeded',
+          true
+        );
+      });
+      handleBreachAccount('Max Drawdown Limit Exceeded');
+      return;
+    }
+
+    // Margin Protection Check (Insufficient Margin / Stop Out)
+    if (metrics.freeMargin < 0) {
+      openTrades.forEach(async (trade) => {
+        const symData = priceEngine[trade.symbol];
+        const currentPrice = symData ? (trade.type === 'buy' ? symData.bid : symData.ask) : trade.openPrice;
+        console.warn(`Insufficient margin! Force-closing trade ${trade.id} under Margin Protection.`);
+        await executeDirectClose(
+          trade,
+          currentPrice,
+          'Margin Protection',
+          'Margin Protection',
+          'Insufficient Free Margin / Stop Out',
+          true
+        );
+      });
+    }
+  }, [metrics.equity, metrics.freeMargin, openTrades, selectedAccount]);
+
+  // Execute direct close with designated price (TP/SL/Protection/Manual)
+  const executeDirectClose = async (
+    trade: Trade, 
+    closePrice: number, 
+    comment?: string, 
+    closeReason?: string,
+    triggeredRule?: string,
+    isSystemForceClose = false
+  ) => {
     if (!selectedAccount) return;
     try {
       // Pass closePrice for both bid and ask to resolve to closePrice under buy/sell PnL formula
       const finalProfit = calculateTradePnL(trade.symbol, trade.type, trade.openPrice, trade.lots, closePrice, closePrice);
       const now = new Date().toISOString();
 
+      const actualReason = closeReason || comment || 'Manual Close';
+      const actualRule = triggeredRule || (actualReason.includes('Protection') ? actualReason : 'Manual Market Execution');
+
+      const tradePayload = {
+        status: 'closed',
+        statusUpper: 'CLOSED',
+        closePrice,
+        closeTime: now,
+        profit: finalProfit,
+        comment: comment || actualReason,
+        closeReason: actualReason,
+        triggeredRule: actualRule
+      };
+
       // 1. Mark trade as closed in Firestore
       try {
-        await updateDoc(doc(db, 'trades', trade.id), {
-          status: 'closed',
-          statusUpper: 'CLOSED',
-          closePrice,
-          closeTime: now,
-          profit: finalProfit,
-          comment: comment || 'Market Close'
-        });
+        await updateDoc(doc(db, 'trades', trade.id), tradePayload);
       } catch (err) {
         await setDoc(doc(db, 'trades', trade.id), {
           ...trade,
-          status: 'closed',
-          statusUpper: 'CLOSED',
-          closePrice,
-          closeTime: now,
-          profit: finalProfit,
-          comment: comment || 'Market Close'
+          ...tradePayload
         }, { merge: true });
+      }
+
+      // If system force-closed position, show pop-up notification modal & log in Firestore notifications
+      if (isSystemForceClose) {
+        setForceCloseNotifModal({
+          isOpen: true,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          type: trade.type,
+          lots: trade.lots,
+          closePrice,
+          profit: finalProfit,
+          closeReason: actualReason,
+          triggeredRule: actualRule,
+          closeTime: now,
+          accountId: selectedAccount.login || selectedAccount.id
+        });
+
+        try {
+          const notifId = 'NOTIF-' + Math.floor(100000 + Math.random() * 900000);
+          await setDoc(doc(db, 'notifications', notifId), {
+            id: notifId,
+            userId: selectedAccount.userId || userId,
+            title: `Position Force Closed: ${actualReason}`,
+            message: `Position #${trade.id} (${trade.type.toUpperCase()} ${trade.symbol} ${trade.lots} Lots) was closed at $${closePrice} due to ${actualReason}. Realized PnL: $${finalProfit.toFixed(2)}.`,
+            type: 'warning',
+            read: false,
+            createdAt: now
+          });
+        } catch (nErr) {
+          console.warn("Could not save notification log:", nErr);
+        }
       }
 
       // 2. Fetch the latest account document safely to apply balance update
@@ -1074,6 +1213,161 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
       offsetPrice = isBuy ? (entryPrice - pips * pipVal) : (entryPrice + pips * pipVal);
       setSl(offsetPrice.toFixed(DECIMAL_PLACES[selectedSymbol.symbol]));
     }
+  };
+
+  // SL/TP modification handler functions
+  const handleOpenModifySlTpModal = (trade: Trade) => {
+    setModifyingSlTpTrade(trade);
+    const existingSl = trade.stopLoss != null ? String(trade.stopLoss) : (trade.sl ? String(trade.sl) : '');
+    const existingTp = trade.takeProfit != null ? String(trade.takeProfit) : (trade.tp ? String(trade.tp) : '');
+    setEditSlInput(existingSl);
+    setEditTpInput(existingTp);
+    setEditSlTpError('');
+  };
+
+  const handleSaveModifySlTp = async () => {
+    if (!modifyingSlTpTrade || !selectedAccount) return;
+    setIsSavingSlTp(true);
+    setEditSlTpError('');
+
+    try {
+      const symData = priceEngine[modifyingSlTpTrade.symbol];
+      const livePrice = symData ? (modifyingSlTpTrade.type === 'buy' ? symData.bid : symData.ask) : modifyingSlTpTrade.openPrice;
+
+      const parsedTp = editTpInput.trim() !== '' ? parseFloat(editTpInput) : null;
+      const parsedSl = editSlInput.trim() !== '' ? parseFloat(editSlInput) : null;
+
+      if (parsedTp !== null && !isNaN(parsedTp)) {
+        if (modifyingSlTpTrade.type === 'buy' && parsedTp <= modifyingSlTpTrade.openPrice) {
+          setEditSlTpError(`Take Profit ($${parsedTp}) must be higher than entry price ($${modifyingSlTpTrade.openPrice}) for BUY position.`);
+          setIsSavingSlTp(false);
+          return;
+        }
+        if (modifyingSlTpTrade.type === 'sell' && parsedTp >= modifyingSlTpTrade.openPrice) {
+          setEditSlTpError(`Take Profit ($${parsedTp}) must be lower than entry price ($${modifyingSlTpTrade.openPrice}) for SELL position.`);
+          setIsSavingSlTp(false);
+          return;
+        }
+      }
+
+      if (parsedSl !== null && !isNaN(parsedSl)) {
+        if (modifyingSlTpTrade.type === 'buy' && parsedSl >= modifyingSlTpTrade.openPrice) {
+          setEditSlTpError(`Stop Loss ($${parsedSl}) must be lower than entry price ($${modifyingSlTpTrade.openPrice}) for BUY position.`);
+          setIsSavingSlTp(false);
+          return;
+        }
+        if (modifyingSlTpTrade.type === 'sell' && parsedSl <= modifyingSlTpTrade.openPrice) {
+          setEditSlTpError(`Stop Loss ($${parsedSl}) must be higher than entry price ($${modifyingSlTpTrade.openPrice}) for SELL position.`);
+          setIsSavingSlTp(false);
+          return;
+        }
+      }
+
+      const updatePayload = {
+        tp: parsedTp !== null ? String(parsedTp) : '',
+        sl: parsedSl !== null ? String(parsedSl) : '',
+        takeProfit: parsedTp,
+        stopLoss: parsedSl,
+      };
+
+      await updateDoc(doc(db, 'trades', modifyingSlTpTrade.id), updatePayload);
+
+      setOpenTrades(prev => prev.map(t => {
+        if (t.id === modifyingSlTpTrade.id) {
+          return {
+            ...t,
+            ...updatePayload
+          };
+        }
+        return t;
+      }));
+
+      setSuccessMsg(`SL/TP updated for Trade #${modifyingSlTpTrade.id} (${modifyingSlTpTrade.symbol})`);
+      setModifyingSlTpTrade(null);
+    } catch (err: any) {
+      console.error("Failed to update SL/TP:", err);
+      setEditSlTpError(`Failed to update SL/TP: ${err.message || String(err)}`);
+    } finally {
+      setIsSavingSlTp(false);
+    }
+  };
+
+  const getCloseReasonBadge = (reason?: string) => {
+    const r = reason || 'Manual Close';
+    if (r.includes('Take Profit')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{r}</span>;
+    }
+    if (r.includes('Stop Loss')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-rose-500/15 text-rose-400 border border-rose-500/20">{r}</span>;
+    }
+    if (r.includes('Daily Drawdown')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-amber-500/15 text-amber-400 border border-amber-500/20">{r}</span>;
+    }
+    if (r.includes('Max Drawdown')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-red-600/20 text-red-400 border border-red-500/30">{r}</span>;
+    }
+    if (r.includes('Margin')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-purple-500/15 text-purple-300 border border-purple-500/20">{r}</span>;
+    }
+    if (r.includes('Breach')) {
+      return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-pink-500/15 text-pink-400 border border-pink-500/20">{r}</span>;
+    }
+    return <span className="px-2 py-0.5 rounded text-[9px] font-bold font-mono bg-slate-500/15 text-slate-300 border border-slate-500/20">{r}</span>;
+  };
+
+  const generateAuditReportText = () => {
+    const nowStr = new Date().toISOString();
+    const accId = selectedAccount?.login || selectedAccount?.id || 'N/A';
+    const accType = selectedAccount?.accountType || 'Standard';
+
+    let lines = [
+      `=====================================================`,
+      `CRITICAL TRADING TERMINAL AUTO-CLOSE AUDIT REPORT`,
+      `=====================================================`,
+      `Generated At: ${nowStr}`,
+      `Account ID: ${accId} (${accType})`,
+      `User ID: ${userId}`,
+      `Total Closed Positions Audited: ${closedTrades.length}`,
+      `-----------------------------------------------------`,
+      ``
+    ];
+
+    if (closedTrades.length === 0) {
+      lines.push(`No closed trades recorded for this account yet.`);
+    } else {
+      closedTrades.forEach((t, idx) => {
+        const reason = t.closeReason || t.comment || 'Manual Close';
+        const rule = t.triggeredRule || (reason.includes('Protection') ? reason : 'Manual Execution');
+        const tpVal = t.takeProfit != null ? `$${t.takeProfit}` : (t.tp ? `$${t.tp}` : 'None');
+        const slVal = t.stopLoss != null ? `$${t.stopLoss}` : (t.sl ? `$${t.sl}` : 'None');
+
+        lines.push(`[Position #${idx + 1} | ID: ${t.id}]`);
+        lines.push(`- Account ID: ${t.accountId || accId}`);
+        lines.push(`- Position ID: ${t.id}`);
+        lines.push(`- Symbol / Direction: ${t.symbol} (${(t.type || 'buy').toUpperCase()} ${t.lots} Lots)`);
+        lines.push(`- Entry Price: $${t.openPrice} | Exit Price: $${t.closePrice ?? 'N/A'}`);
+        lines.push(`- Set TP: ${tpVal} | Set SL: ${slVal}`);
+        lines.push(`- Realized PnL: $${(t.profit || 0).toFixed(2)}`);
+        lines.push(`- Close Reason: ${reason}`);
+        lines.push(`- Triggered Rule: ${rule}`);
+        lines.push(`- Time of Closure: ${t.closeTime || 'N/A'}`);
+        lines.push(`-----------------------------------------------------`);
+      });
+    }
+
+    lines.push(``);
+    lines.push(`=====================================================`);
+    lines.push(`END OF AUDIT REPORT`);
+    lines.push(`=====================================================`);
+
+    return lines.join('\n');
+  };
+
+  const handleCopyAuditReport = () => {
+    const text = generateAuditReportText();
+    navigator.clipboard.writeText(text);
+    setCopiedReport(true);
+    setTimeout(() => setCopiedReport(false), 2500);
   };
 
   // Rule Metrics Trackers
@@ -1930,23 +2224,31 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                               <td className="py-3.5 font-mono">${trade.openPrice}</td>
                               <td className="py-3.5 font-mono text-blue-400">${currentPrice}</td>
                               <td className="py-3.5 text-right font-mono text-[10px] text-slate-400">
-                                <div>TP: {trade.tp && trade.tp > 0 ? `$${trade.tp}` : 'None'}</div>
-                                <div className="text-[9px] text-slate-500">SL: {trade.sl && trade.sl > 0 ? `$${trade.sl}` : 'None'}</div>
+                                <div>TP: {trade.takeProfit != null ? `$${trade.takeProfit}` : (trade.tp && trade.tp !== '' ? `$${trade.tp}` : 'None')}</div>
+                                <div className="text-[9px] text-slate-500">SL: {trade.stopLoss != null ? `$${trade.stopLoss}` : (trade.sl && trade.sl !== '' ? `$${trade.sl}` : 'None')}</div>
                               </td>
                               <td className={`py-3.5 text-right font-mono font-bold text-sm ${currentPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 ${currentPnL >= 0 ? '+' : ''}{currentPnL.toFixed(2)}
                               </td>
                               <td className="py-3.5 text-right">
-                                <div className="flex gap-2 justify-end">
+                                <div className="flex gap-1.5 justify-end">
+                                  <button
+                                    onClick={() => handleOpenModifySlTpModal(trade)}
+                                    className="px-2 py-1.5 bg-purple-500/10 hover:bg-purple-500 hover:text-white border border-purple-500/20 text-purple-400 rounded-lg text-[10px] font-bold transition-all flex items-center space-x-1"
+                                    title="Modify Stop Loss & Take Profit"
+                                  >
+                                    <Sliders className="w-3 h-3" />
+                                    <span>SL/TP</span>
+                                  </button>
                                   <button
                                     onClick={() => handleOpenPartialModal(trade)}
-                                    className="px-2.5 py-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/20 text-blue-400 rounded-lg text-[10px] font-bold transition-all"
+                                    className="px-2 py-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/20 text-blue-400 rounded-lg text-[10px] font-bold transition-all"
                                   >
                                     Partial
                                   </button>
                                   <button
                                     onClick={() => handleCloseTrade(trade)}
-                                    className="px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500 hover:text-white border border-red-500/20 text-red-400 rounded-lg text-[10px] font-bold transition-all flex items-center space-x-1"
+                                    className="px-2 py-1.5 bg-red-500/10 hover:bg-red-500 hover:text-white border border-red-500/20 text-red-400 rounded-lg text-[10px] font-bold transition-all flex items-center space-x-1"
                                   >
                                     <Square className="w-2 h-2 fill-current" />
                                     <span>Close</span>
@@ -2045,16 +2347,26 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
 
               {/* 6. HISTORIC TRADES PANEL */}
               <div className="bg-[#0b0f19] border border-white/5 rounded-2xl p-5 space-y-3 shadow-xl">
-                <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider font-mono">
-                  Simulated Trade History
-                </h3>
+                <div className="flex justify-between items-center">
+                  <h3 className="text-xs font-extrabold text-slate-400 uppercase tracking-wider font-mono">
+                    Simulated Trade History
+                  </h3>
+                  <button
+                    onClick={() => setShowAuditReportModal(true)}
+                    className="px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/20 text-blue-400 rounded-lg text-xs font-bold font-mono transition-all flex items-center space-x-1.5"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Auto-Close Audit Report</span>
+                  </button>
+                </div>
+
                 {closedTrades.length === 0 ? (
                   <div className="py-12 text-center text-xs text-slate-500">
                     No completed mock trades recorded. Close open positions to realize profit or loss.
                   </div>
                 ) : (
                   <div className="overflow-x-auto max-h-[280px] overflow-y-auto pr-1">
-                    <table className="w-full text-left min-w-[650px]">
+                    <table className="w-full text-left min-w-[720px]">
                       <thead>
                         <tr className="border-b border-white/5 text-[10px] uppercase font-mono text-slate-500 sticky top-0 bg-[#0b0f19] z-10">
                           <th className="py-2">Symbol</th>
@@ -2062,6 +2374,7 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                           <th className="py-2">Lots</th>
                           <th className="py-2">Entry Price</th>
                           <th className="py-2">Exit Price</th>
+                          <th className="py-2">Close Reason</th>
                           <th className="py-2 font-mono">Close Time</th>
                           <th className="py-2 text-right">Realized Profit</th>
                         </tr>
@@ -2079,15 +2392,15 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
                             </td>
                             <td className="py-3 font-mono">{trade.lots}</td>
                             <td className="py-3 font-mono">${trade.openPrice}</td>
-                            <td className="py-3 font-mono">${trade.closePrice}</td>
+                            <td className="py-3 font-mono">${trade.closePrice ?? 'N/A'}</td>
+                            <td className="py-3 font-mono">
+                              {getCloseReasonBadge(trade.closeReason || trade.comment)}
+                            </td>
                             <td className="py-3 font-mono text-[10px] text-slate-500">
-                              {new Date(trade.closeTime || '').toLocaleDateString()} {new Date(trade.closeTime || '').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              {trade.closeTime ? `${new Date(trade.closeTime).toLocaleDateString()} ${new Date(trade.closeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'N/A'}
                             </td>
                             <td className={`py-3 text-right font-mono font-bold text-sm ${trade.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                               ${trade.profit >= 0 ? '+' : ''}{trade.profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                              {trade.comment && (
-                                <span className="block text-[8px] font-sans font-normal text-slate-500 uppercase mt-0.5">{trade.comment}</span>
-                              )}
                             </td>
                           </tr>
                         ))}
@@ -2236,6 +2549,217 @@ export default function TradingTerminal({ userId, selectedAccount, onRefreshAcco
             >
               {ruleBreachModal.type === 'success' ? 'Awesome, Got It!' : 'I Understand & Acknowledge Warning'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 8. MODIFY SL / TP MODAL */}
+      {modifyingSlTpTrade && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[998] flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#0b0f19] border border-white/10 rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl relative">
+            <div className="flex justify-between items-center border-b border-white/10 pb-3">
+              <div className="flex items-center space-x-2">
+                <Sliders className="w-5 h-5 text-purple-400" />
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider font-mono">
+                  Modify Position SL & TP
+                </h3>
+              </div>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase ${
+                modifyingSlTpTrade.type === 'buy' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'
+              }`}>
+                {modifyingSlTpTrade.type} {modifyingSlTpTrade.symbol} ({modifyingSlTpTrade.lots} Lots)
+              </span>
+            </div>
+
+            {editSlTpError && (
+              <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-300 font-medium">
+                {editSlTpError}
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs bg-[#070a13] p-3.5 rounded-2xl border border-white/5 font-mono">
+              <div className="flex justify-between text-slate-400">
+                <span>Position ID:</span>
+                <span className="text-white font-bold">{modifyingSlTpTrade.id}</span>
+              </div>
+              <div className="flex justify-between text-slate-400">
+                <span>Entry Price:</span>
+                <span className="text-white font-bold">${modifyingSlTpTrade.openPrice}</span>
+              </div>
+              <div className="flex justify-between text-slate-400">
+                <span>Current Live Quote:</span>
+                <span className="text-blue-400 font-bold">
+                  ${(priceEngine[modifyingSlTpTrade.symbol] || modifyingSlTpTrade)[modifyingSlTpTrade.type === 'buy' ? 'bid' : 'ask'] || modifyingSlTpTrade.openPrice}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs text-slate-300 font-bold font-mono flex justify-between">
+                  <span>Take Profit Target (TP)</span>
+                  <span className="text-slate-500 font-normal">Leave blank to clear</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-slate-500 font-mono">$</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    placeholder="e.g. 1.0850 or 2750.00"
+                    value={editTpInput}
+                    onChange={(e) => setEditTpInput(e.target.value)}
+                    className="w-full h-10 bg-[#070a13] border border-white/10 rounded-xl pl-7 pr-3 text-xs font-mono text-emerald-400 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs text-slate-300 font-bold font-mono flex justify-between">
+                  <span>Stop Loss Boundary (SL)</span>
+                  <span className="text-slate-500 font-normal">Leave blank to clear</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-slate-500 font-mono">$</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    placeholder="e.g. 1.0700 or 2680.00"
+                    value={editSlInput}
+                    onChange={(e) => setEditSlInput(e.target.value)}
+                    className="w-full h-10 bg-[#070a13] border border-white/10 rounded-xl pl-7 pr-3 text-xs font-mono text-rose-400 focus:outline-none focus:border-rose-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setModifyingSlTpTrade(null)}
+                disabled={isSavingSlTp}
+                className="flex-1 h-11 bg-white/5 hover:bg-white/10 text-slate-300 font-bold rounded-xl transition-colors text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveModifySlTp}
+                disabled={isSavingSlTp}
+                className="flex-1 h-11 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl transition-colors text-xs flex items-center justify-center space-x-2"
+              >
+                {isSavingSlTp ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Save Parameters</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 9. SYSTEM FORCE-CLOSED NOTIFICATION MODAL */}
+      {forceCloseNotifModal && forceCloseNotifModal.isOpen && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="border-2 border-rose-500/50 bg-[#0f172a] rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 shadow-2xl shadow-rose-950/40 relative">
+            <div className="flex items-center space-x-3.5">
+              <div className="w-12 h-12 rounded-2xl border border-rose-500/40 bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+                <ShieldAlert className="w-6 h-6 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wider">
+                  Position Force-Closed Notice
+                </h3>
+                <p className="text-xs font-semibold text-rose-400 mt-0.5 font-mono">
+                  Triggered Reason: {forceCloseNotifModal.closeReason}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-4 space-y-2.5 text-xs text-slate-200 font-mono">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Position ID:</span>
+                <span className="text-white font-bold">#{forceCloseNotifModal.tradeId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Account ID:</span>
+                <span className="text-white font-bold">{forceCloseNotifModal.accountId}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Symbol / Direction:</span>
+                <span className="text-white font-bold">{forceCloseNotifModal.symbol} ({forceCloseNotifModal.type.toUpperCase()} {forceCloseNotifModal.lots} Lots)</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Execution Close Price:</span>
+                <span className="text-blue-400 font-bold">${forceCloseNotifModal.closePrice}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Realized PnL:</span>
+                <span className={`font-bold ${forceCloseNotifModal.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  ${forceCloseNotifModal.profit.toFixed(2)}
+                </span>
+              </div>
+              <div className="pt-2 border-t border-rose-500/20 flex justify-between">
+                <span className="text-slate-400">Triggered Protection Rule:</span>
+                <span className="text-amber-400 font-bold">{forceCloseNotifModal.triggeredRule}</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-400 italic">
+              Note: This position was closed automatically by the Risk Management Engine to safeguard account equity and strictly enforce terminal rules.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setForceCloseNotifModal(null)}
+              className="w-full h-11 bg-rose-600 hover:bg-rose-500 text-white font-extrabold rounded-full text-xs uppercase tracking-wider transition-colors shadow-lg shadow-rose-600/20"
+            >
+              Acknowledge & Close Notice
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 10. AUTO-CLOSE AUDIT REPORT MODAL */}
+      {showAuditReportModal && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
+          <div className="bg-[#0b0f19] border border-white/10 rounded-3xl p-6 sm:p-8 max-w-2xl w-full space-y-5 shadow-2xl relative">
+            <div className="flex justify-between items-center border-b border-white/10 pb-4">
+              <div className="flex items-center space-x-2.5">
+                <FileText className="w-5 h-5 text-blue-400" />
+                <h3 className="text-base font-extrabold text-white uppercase tracking-wider font-mono">
+                  Auto-Close Audit Log Report
+                </h3>
+              </div>
+              <button
+                onClick={handleCopyAuditReport}
+                className="px-3 py-1.5 bg-blue-500 hover:bg-blue-400 text-white rounded-xl text-xs font-bold font-mono transition-all flex items-center space-x-1.5"
+              >
+                {copiedReport ? <Check className="w-4 h-4 text-emerald-300" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedReport ? 'Report Copied!' : 'Copy Full Audit Text'}</span>
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              This report compiles complete audit metadata for all closed trades in this account, explicitly detailing Position IDs, Account IDs, Close Reasons, Triggered Rules, and Execution Timestamps.
+            </p>
+
+            <div className="bg-[#070a13] border border-white/5 rounded-2xl p-4 font-mono text-[11px] text-slate-300 max-h-[350px] overflow-y-auto whitespace-pre leading-relaxed select-all">
+              {generateAuditReportText()}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAuditReportModal(false)}
+                className="px-6 h-10 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl text-xs transition-colors"
+              >
+                Close Report
+              </button>
+            </div>
           </div>
         </div>
       )}

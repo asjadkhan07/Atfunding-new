@@ -112,6 +112,8 @@ export async function executeOrder(input: OrderInput): Promise<OrderExecutionRes
     volume,
     tp: parsedTp ? String(parsedTp) : '',
     sl: parsedSl ? String(parsedSl) : '',
+    takeProfit: parsedTp || null,
+    stopLoss: parsedSl || null,
     openTime,
     status: 'open', // compatible with lowercase systems
     statusUpper: 'OPEN', // core UPPERCASE status

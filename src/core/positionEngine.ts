@@ -35,6 +35,10 @@ export function mapToRichTrade(t: any): RichTrade {
   const statusUpper = (t.status === 'open' || t.status === 'OPEN') ? 'OPEN' : 'CLOSED';
   const closePrice = t.closePrice !== undefined && t.closePrice !== null && t.closePrice !== '' ? Number(t.closePrice) : undefined;
   const profit = t.profit !== undefined && t.profit !== null && t.profit !== '' ? Number(t.profit) : 0;
+  const rawTp = t.tp !== undefined && t.tp !== null && t.tp !== '' ? t.tp : t.takeProfit;
+  const rawSl = t.sl !== undefined && t.sl !== null && t.sl !== '' ? t.sl : t.stopLoss;
+  const tpVal = rawTp !== undefined && rawTp !== null && rawTp !== '' ? Number(rawTp) : null;
+  const slVal = rawSl !== undefined && rawSl !== null && rawSl !== '' ? Number(rawSl) : null;
   
   return {
     ...t,
@@ -48,8 +52,12 @@ export function mapToRichTrade(t: any): RichTrade {
     volume,
     openPrice: entryPrice,
     entryPrice,
-    tp: String(t.tp || ''),
-    sl: String(t.sl || ''),
+    tp: tpVal !== null ? String(tpVal) : '',
+    sl: slVal !== null ? String(slVal) : '',
+    takeProfit: tpVal,
+    stopLoss: slVal,
+    closeReason: t.closeReason || t.comment || (statusUpper === 'CLOSED' ? 'Manual Close' : undefined),
+    triggeredRule: t.triggeredRule || '',
     status: statusUpper === 'OPEN' ? 'open' : 'closed',
     statusUpper,
     profit,

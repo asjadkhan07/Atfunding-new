@@ -54,7 +54,7 @@ export default function LeaderboardView({
       if (!propAccounts) {
         try {
           const accs = await getDocsCached<TradingAccount>('leaderboard_accounts', async () => {
-            const snap = await getDocs(query(collection(db, 'accounts'), limit(100)));
+            const snap = await getDocs(collection(db, 'accounts'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as TradingAccount));
           }, 60000, false, 'LeaderboardView');
           setAccounts(accs);
@@ -66,7 +66,7 @@ export default function LeaderboardView({
       if (!propUsers) {
         try {
           const usrs = await getDocsCached<UserProfile>('leaderboard_users', async () => {
-            const snap = await getDocs(query(collection(db, 'users'), limit(100)));
+            const snap = await getDocs(collection(db, 'users'));
             return snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile));
           }, 60000, false, 'LeaderboardView');
           setUsers(usrs);
@@ -78,7 +78,7 @@ export default function LeaderboardView({
       if (!propPayouts) {
         try {
           const py = await getDocsCached<PayoutRequest>('leaderboard_payouts', async () => {
-            const snap = await getDocs(query(collection(db, 'payouts'), limit(100)));
+            const snap = await getDocs(collection(db, 'payouts'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as PayoutRequest));
           }, 60000, false, 'LeaderboardView');
           setPayouts(py);

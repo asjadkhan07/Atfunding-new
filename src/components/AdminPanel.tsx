@@ -555,7 +555,7 @@ export default function AdminPanel() {
       try {
         if (['stats', 'users', 'search', 'kyc_verification'].includes(activeTab) || users.length === 0) {
           const uList = await getDocsCached<UserProfile>('admin_users', async () => {
-            const snap = await getDocs(query(collection(db, 'users'), limit(50)));
+            const snap = await getDocs(collection(db, 'users'));
             return snap.docs.map(d => ({ uid: d.id, ...d.data() } as UserProfile));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setUsers(uList);
@@ -563,7 +563,7 @@ export default function AdminPanel() {
 
         if (['stats', 'accounts', 'active_accounts', 'challenge_reviews'].includes(activeTab) || accounts.length === 0) {
           const aList = await getDocsCached<TradingAccount>('admin_accounts', async () => {
-            const snap = await getDocs(query(collection(db, 'accounts'), limit(50)));
+            const snap = await getDocs(collection(db, 'accounts'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as TradingAccount));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setAccounts(aList);
@@ -571,7 +571,7 @@ export default function AdminPanel() {
 
         if (['stats', 'payouts'].includes(activeTab) || payouts.length === 0) {
           const pList = await getDocsCached<PayoutRequest>('admin_payouts', async () => {
-            const snap = await getDocs(query(collection(db, 'payouts'), limit(50)));
+            const snap = await getDocs(collection(db, 'payouts'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as PayoutRequest));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setPayouts(pList);
@@ -579,7 +579,7 @@ export default function AdminPanel() {
 
         if (['referral_withdrawals'].includes(activeTab)) {
           const rList = await getDocsCached<ReferralWithdrawal>('admin_ref_withdrawals', async () => {
-            const snap = await getDocs(query(collection(db, 'referral_withdrawals'), limit(50)));
+            const snap = await getDocs(collection(db, 'referral_withdrawals'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() as ReferralWithdrawal }));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setReferralWithdrawals(rList);
@@ -587,7 +587,7 @@ export default function AdminPanel() {
 
         if (['coupons'].includes(activeTab)) {
           const cList = await getDocsCached<Coupon>('admin_coupons', async () => {
-            const snap = await getDocs(query(collection(db, 'coupons'), limit(50)));
+            const snap = await getDocs(collection(db, 'coupons'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as Coupon));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setCoupons(cList);
@@ -595,7 +595,7 @@ export default function AdminPanel() {
 
         if (['trades'].includes(activeTab)) {
           const tList = await getDocsCached<Trade>('admin_trades', async () => {
-            const snap = await getDocs(query(collection(db, 'trades'), limit(50)));
+            const snap = await getDocs(collection(db, 'trades'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as Trade));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setTrades(tList);
@@ -603,7 +603,7 @@ export default function AdminPanel() {
 
         if (['stats', 'orders'].includes(activeTab)) {
           const oList = await getDocsCached<Order>('admin_orders', async () => {
-            const snap = await getDocs(query(collection(db, 'orders'), limit(50)));
+            const snap = await getDocs(collection(db, 'orders'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as unknown as Order));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setOrders(oList);
@@ -611,13 +611,13 @@ export default function AdminPanel() {
 
         if (['rule_violations'].includes(activeTab)) {
           const rvList = await getDocsCached('admin_rule_violations', async () => {
-            const snap = await getDocs(query(collection(db, 'ruleViolations'), limit(50)));
+            const snap = await getDocs(collection(db, 'ruleViolations'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() }));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setRuleViolations(rvList);
 
           const brList = await getDocsCached('admin_breaches', async () => {
-            const snap = await getDocs(query(collection(db, 'breaches'), limit(50)));
+            const snap = await getDocs(collection(db, 'breaches'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() }));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setBreaches(brList);
@@ -625,7 +625,7 @@ export default function AdminPanel() {
 
         if (['support_tickets'].includes(activeTab)) {
           const stList = await getDocsCached<SupportTicket>('admin_support_tickets', async () => {
-            const snap = await getDocs(query(collection(db, 'supportTickets'), limit(50)));
+            const snap = await getDocs(collection(db, 'supportTickets'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setSupportTickets(stList);
@@ -633,7 +633,7 @@ export default function AdminPanel() {
 
         if (['announcements'].includes(activeTab)) {
           const anList = await getDocsCached<Announcement>('admin_announcements', async () => {
-            const snap = await getDocs(query(collection(db, 'announcements'), limit(50)));
+            const snap = await getDocs(collection(db, 'announcements'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() as any }));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setAnnouncements(anList);
@@ -641,25 +641,25 @@ export default function AdminPanel() {
 
         if (['tasks_rewards'].includes(activeTab)) {
           const tkList = await getDocsCached<Task>('admin_tasks', async () => {
-            const snap = await getDocs(query(collection(db, 'tasks'), limit(50)));
+            const snap = await getDocs(collection(db, 'tasks'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as Task));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setTasks(tkList);
 
           const tsList = await getDocsCached<TaskSubmission>('admin_task_submissions', async () => {
-            const snap = await getDocs(query(collection(db, 'task_submissions'), limit(50)));
+            const snap = await getDocs(collection(db, 'task_submissions'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as TaskSubmission));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setTaskSubmissions(tsList);
 
           const rsList = await getDocsCached<RewardStoreItem>('admin_reward_store', async () => {
-            const snap = await getDocs(query(collection(db, 'reward_store'), limit(50)));
+            const snap = await getDocs(collection(db, 'reward_store'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as RewardStoreItem));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setRewardStoreItems(rsList);
 
           const rrList = await getDocsCached<RewardRedemption>('admin_reward_redemptions', async () => {
-            const snap = await getDocs(query(collection(db, 'reward_redemptions'), limit(50)));
+            const snap = await getDocs(collection(db, 'reward_redemptions'));
             return snap.docs.map(d => ({ id: d.id, ...d.data() } as RewardRedemption));
           }, 60000, false, 'AdminPanel');
           if (isMounted) setRewardRedemptions(rrList);

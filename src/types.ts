@@ -66,6 +66,16 @@ export interface TradingAccount {
   lastTradeClosedAt?: string;
 }
 
+export type CloseReasonType = 
+  | 'Manual Close'
+  | 'Stop Loss Hit'
+  | 'Take Profit Hit'
+  | 'Daily Drawdown Protection'
+  | 'Max Drawdown Protection'
+  | 'Margin Protection'
+  | 'Account Breach'
+  | string;
+
 export interface Trade {
   id: string;
   accountId: string;
@@ -79,6 +89,13 @@ export interface Trade {
   status: 'open' | 'closed';
   openTime: string;
   closeTime?: string;
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  sl?: number | string | null;
+  tp?: number | string | null;
+  closeReason?: CloseReasonType;
+  triggeredRule?: string;
+  comment?: string;
 }
 
 export interface PayoutRequest {

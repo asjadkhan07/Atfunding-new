@@ -132,14 +132,12 @@ export default function LandingPage({
     }).then(res => setPayouts(res)).catch(e => console.warn(e));
 
     getDocsCached('landing_leaderboard_accounts', async () => {
-      const qAccs = query(collection(db, 'accounts'), limit(50));
-      const snap = await getDocs(qAccs);
+      const snap = await getDocs(collection(db, 'accounts'));
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     }).then(res => setAccounts(res)).catch(e => console.warn(e));
 
     getDocsCached('landing_leaderboard_users', async () => {
-      const qUsers = query(collection(db, 'users'), limit(50));
-      const snap = await getDocs(qUsers);
+      const snap = await getDocs(collection(db, 'users'));
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
     }).then(res => setUsersList(res)).catch(e => console.warn(e));
   }, []);
